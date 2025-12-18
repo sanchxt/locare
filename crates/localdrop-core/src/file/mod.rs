@@ -33,9 +33,10 @@ use crate::error::Result;
 ///
 /// Returns the mode bits on Unix systems, or None on other platforms.
 #[cfg(unix)]
+#[allow(clippy::unnecessary_wraps)] // Must return Option to match non-unix signature
 fn get_permissions(metadata: &std::fs::Metadata) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
-    Some(metadata.permissions().mode())
+    Some(metadata.permissions().mode() & 0o7777)
 }
 
 /// Get Unix file permissions from metadata.

@@ -69,7 +69,7 @@ fn configure_tcp_keepalive(stream: &TcpStream) -> Result<()> {
 
     socket_ref
         .set_tcp_keepalive(&keepalive)
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| Error::Io(std::io::Error::other(e)))?;
 
     tracing::debug!("TCP keep-alive enabled on socket");
     Ok(())
@@ -825,7 +825,7 @@ impl ReceiveSession {
                 }
 
                 // Wait for the keep-alive interval, then send Ping
-                _ = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
+                () = tokio::time::sleep(KEEPALIVE_INTERVAL) => {
                     tracing::debug!("Sending keep-alive Ping");
 
                     // Send Ping
@@ -1026,7 +1026,7 @@ impl ReceiveSession {
             files,
             output_dir: resume_state.output_dir,
             _config: config,
-            code: code,
+            code,
             _session_key: session_key,
             progress_tx,
             progress_rx,

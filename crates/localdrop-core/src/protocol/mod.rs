@@ -553,7 +553,7 @@ mod tests {
             crate::error::Error::Timeout(secs) => {
                 assert_eq!(secs, 0); // 50ms rounds to 0 seconds
             }
-            e => panic!("Expected Timeout error, got: {:?}", e),
+            e => panic!("Expected Timeout error, got: {e:?}"),
         }
     }
 

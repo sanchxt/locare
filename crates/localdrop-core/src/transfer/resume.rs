@@ -427,9 +427,9 @@ mod tests {
         manager.save(&state2).await.expect("save state2");
 
         // List all
-        let states = manager.list().await.expect("list states");
+        let all_states = manager.list().await.expect("list states");
 
-        assert_eq!(states.len(), 2);
+        assert_eq!(all_states.len(), 2);
     }
 
     #[tokio::test]
