@@ -68,6 +68,10 @@ pub enum MessageType {
     Ping = 0x30,
     /// Keep-alive response
     Pong = 0x31,
+    /// Resume request (receiver sends completed chunks)
+    ResumeRequest = 0x40,
+    /// Resume acknowledgment (sender confirms what to retransfer)
+    ResumeAck = 0x41,
     /// Error message
     Error = 0xFF,
 }
@@ -91,6 +95,8 @@ impl MessageType {
             0x21 => Some(Self::TransferCancel),
             0x30 => Some(Self::Ping),
             0x31 => Some(Self::Pong),
+            0x40 => Some(Self::ResumeRequest),
+            0x41 => Some(Self::ResumeAck),
             0xFF => Some(Self::Error),
             _ => None,
         }
@@ -239,6 +245,40 @@ pub struct ErrorPayload {
     pub code: String,
     /// Error message
     pub message: String,
+}
+
+/// Resume request payload.
+///
+/// Sent by the receiver to resume an interrupted transfer.
+/// Contains information about which chunks have already been received.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeRequestPayload {
+    /// Transfer ID from the original transfer
+    pub transfer_id: uuid::Uuid,
+    /// Map of file index -> completed chunk indices
+    pub completed_chunks: std::collections::HashMap<usize, Vec<u64>>,
+    /// Map of file index -> SHA-256 hash (hex encoded) for fully completed files
+    pub completed_file_hashes: std::collections::HashMap<usize, String>,
+}
+
+/// Resume acknowledgment payload.
+///
+/// Sent by the sender in response to a resume request.
+/// Specifies which files/chunks need to be retransferred.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeAckPayload {
+    /// Whether the resume request was accepted
+    pub accepted: bool,
+    /// Indices of files that need to be fully retransferred
+    /// (e.g., due to hash mismatch or file changes)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retransfer_files: Option<Vec<usize>>,
+    /// Map of file index -> chunk indices that need to be retransferred
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retransfer_chunks: Option<std::collections::HashMap<usize, Vec<u64>>>,
+    /// Reason if not accepted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Encode a message payload to JSON bytes.

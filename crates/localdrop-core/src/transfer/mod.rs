@@ -14,6 +14,10 @@
 //! - Parallel chunks: Up to 4 concurrent streams
 //! - Checksum: xxHash64 per chunk, SHA-256 for complete file
 
+pub mod resume;
+
+pub use resume::ResumeManager;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,7 +31,9 @@ use uuid::Uuid;
 
 use crate::code::{CodeGenerator, ShareCode};
 use crate::crypto::{self, TlsConfig};
-use crate::discovery::{Broadcaster, DiscoveryPacket, Listener, DEFAULT_DISCOVERY_PORT};
+use crate::discovery::{
+    DiscoveryPacket, HybridBroadcaster, HybridListener, DEFAULT_DISCOVERY_PORT,
+};
 use crate::error::{Error, Result};
 use crate::file::{
     enumerate_files, EnumerateOptions, FileChunk, FileChunker, FileMetadata, FileWriter,
@@ -188,8 +194,8 @@ pub struct ShareSession {
     listener: TcpListener,
     /// TLS config
     tls_config: TlsConfig,
-    /// UDP broadcaster
-    broadcaster: Broadcaster,
+    /// Hybrid discovery broadcaster (UDP + mDNS)
+    broadcaster: HybridBroadcaster,
 }
 
 impl std::fmt::Debug for ShareSession {
@@ -241,7 +247,7 @@ impl ShareSession {
             |h| h.to_string_lossy().to_string(),
         );
 
-        let broadcaster = Broadcaster::new(config.discovery_port).await?;
+        let broadcaster = HybridBroadcaster::new(config.discovery_port).await?;
 
         let device_id = Uuid::new_v4();
         let packet = DiscoveryPacket::new(
@@ -589,11 +595,11 @@ impl ReceiveSession {
         output_dir: PathBuf,
         config: TransferConfig,
     ) -> Result<Self> {
-        let listener = Listener::new(config.discovery_port).await?;
+        let listener = HybridListener::new(config.discovery_port).await?;
         let discovered = listener.find(code, config.discovery_timeout).await?;
 
         tracing::info!(
-            "Found share from {} at {}",
+            "Found share from {} at {} (via hybrid discovery)",
             discovered.packet.device_name,
             discovered.source
         );
@@ -736,6 +742,288 @@ impl ReceiveSession {
             let _ = stream.shutdown().await;
         }
         self.update_state(TransferState::Cancelled);
+    }
+
+    /// Create a ResumeState for the current session.
+    ///
+    /// This can be used to persist the transfer state for later resumption.
+    #[must_use]
+    pub fn create_resume_state(&self, transfer_id: Uuid, sender_device_id: Uuid) -> ResumeState {
+        ResumeState::new(
+            transfer_id,
+            self._code.as_str(),
+            self.files.clone(),
+            &self.sender_name,
+            sender_device_id,
+            self.output_dir.clone(),
+        )
+    }
+
+    /// Connect to resume an interrupted transfer.
+    ///
+    /// # Arguments
+    ///
+    /// * `resume_state` - The saved state from a previous interrupted transfer
+    /// * `config` - Transfer configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the connection fails or the sender doesn't accept the resume.
+    pub async fn connect_with_resume(
+        resume_state: ResumeState,
+        config: TransferConfig,
+    ) -> Result<Self> {
+        let code = ShareCode::parse(&resume_state.code)?;
+
+        let listener = HybridListener::new(config.discovery_port).await?;
+        let discovered = listener.find(&code, config.discovery_timeout).await?;
+
+        tracing::info!(
+            "Found share from {} at {} for resume (via hybrid discovery)",
+            discovered.packet.device_name,
+            discovered.source
+        );
+
+        let transfer_addr =
+            SocketAddr::new(discovered.source.ip(), discovered.packet.transfer_port);
+        let stream = TcpStream::connect(transfer_addr).await?;
+
+        let tls_config = TlsConfig::client()?;
+        let connector = TlsConnector::from(Arc::new(
+            tls_config
+                .client_config()
+                .ok_or_else(|| Error::TlsError("no client config".to_string()))?
+                .clone(),
+        ));
+        let mut tls_stream = connector
+            .connect("localhost".try_into().unwrap(), stream)
+            .await
+            .map_err(|e| Error::TlsError(format!("TLS handshake failed: {e}")))?;
+
+        let session_key = crypto::derive_session_key(code.as_str());
+
+        Self::do_handshake(&mut tls_stream).await?;
+        Self::do_code_verification(&mut tls_stream, &code, &session_key).await?;
+
+        // Receive file list to verify it matches
+        let files = Self::receive_file_list(&mut tls_stream).await?;
+
+        // Verify file list matches the resume state
+        if files.len() != resume_state.files.len() {
+            return Err(Error::ResumeMismatch(
+                "File list has changed since the transfer was interrupted".to_string(),
+            ));
+        }
+
+        let total_bytes: u64 = files.iter().map(|f| f.size).sum();
+        let mut progress = TransferProgress::new(files.len(), total_bytes);
+        progress.total_bytes_transferred = resume_state.bytes_received;
+        let (progress_tx, progress_rx) = watch::channel(progress);
+
+        Ok(Self {
+            sender_addr: transfer_addr,
+            sender_name: discovered.packet.device_name,
+            files,
+            output_dir: resume_state.output_dir,
+            _config: config,
+            _code: code,
+            _session_key: session_key,
+            progress_tx,
+            progress_rx,
+            tls_stream: Some(tls_stream),
+        })
+    }
+
+    /// Accept the transfer with resume support.
+    ///
+    /// This sends a resume request to the sender indicating which chunks
+    /// have already been received.
+    ///
+    /// # Arguments
+    ///
+    /// * `resume_state` - The saved state with completed chunks information
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the transfer fails.
+    pub async fn accept_with_resume(&mut self, resume_state: &ResumeState) -> Result<()> {
+        let mut stream = self
+            .tls_stream
+            .take()
+            .ok_or_else(|| Error::Internal("no TLS stream".to_string()))?;
+
+        // First accept the transfer
+        let ack = FileListAckPayload {
+            accepted: true,
+            accepted_files: None,
+        };
+        let ack_payload = protocol::encode_payload(&ack)?;
+        protocol::write_frame(&mut stream, MessageType::FileListAck, &ack_payload).await?;
+
+        // Send resume request with our progress
+        let resume_request = protocol::ResumeRequestPayload {
+            transfer_id: resume_state.transfer_id,
+            completed_chunks: resume_state.completed_chunks.clone(),
+            completed_file_hashes: resume_state.completed_file_hashes.clone(),
+        };
+        let resume_payload = protocol::encode_payload(&resume_request)?;
+        protocol::write_frame(&mut stream, MessageType::ResumeRequest, &resume_payload).await?;
+
+        // Wait for resume acknowledgment
+        let (header, payload) = protocol::read_frame(&mut stream).await?;
+        if header.message_type != MessageType::ResumeAck {
+            return Err(Error::UnexpectedMessage {
+                expected: "ResumeAck".to_string(),
+                actual: format!("{:?}", header.message_type),
+            });
+        }
+
+        let resume_ack: protocol::ResumeAckPayload = protocol::decode_payload(&payload)?;
+        if !resume_ack.accepted {
+            let reason = resume_ack.reason.unwrap_or_else(|| "unknown".to_string());
+            return Err(Error::ResumeRejected(reason));
+        }
+
+        tracing::info!("Resume accepted by sender");
+
+        self.update_state(TransferState::Transferring);
+
+        // Receive remaining chunks
+        self.do_receive_resumed(&mut stream, resume_state).await?;
+
+        self.update_state(TransferState::Completed);
+
+        Ok(())
+    }
+
+    /// Receive files with resume support.
+    async fn do_receive_resumed<S>(
+        &self,
+        stream: &mut S,
+        resume_state: &ResumeState,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let chunk_size = crate::DEFAULT_CHUNK_SIZE;
+        let mut current_writer: Option<FileWriter> = None;
+        let mut current_file_index: Option<usize> = None;
+
+        loop {
+            let (header, payload) = protocol::read_frame(stream).await?;
+
+            match header.message_type {
+                MessageType::ChunkStart => {
+                    let start: ChunkStartPayload = protocol::decode_payload(&payload)?;
+
+                    if current_file_index != Some(start.file_index) {
+                        // Finalize previous file
+                        if let Some(writer) = current_writer.take() {
+                            let _sha256 = writer.finalize_with_full_hash().await?;
+                        }
+
+                        let file = &self.files[start.file_index];
+                        let output_path = self.output_dir.join(&file.relative_path);
+
+                        // Calculate how many bytes we've already received for this file
+                        let completed_chunks =
+                            resume_state.completed_chunks.get(&start.file_index);
+                        let bytes_completed = completed_chunks.map_or(0, |chunks| {
+                            chunks.len() as u64 * chunk_size as u64
+                        });
+
+                        // Use resumable writer
+                        current_writer = Some(
+                            FileWriter::new_resumable(output_path, file.size, bytes_completed)
+                                .await?,
+                        );
+                        current_file_index = Some(start.file_index);
+
+                        {
+                            let mut progress = self.progress_rx.borrow().clone();
+                            progress.current_file = start.file_index;
+                            progress.current_file_name = file.file_name().to_string();
+                            progress.file_bytes_transferred = bytes_completed;
+                            progress.file_total_bytes = file.size;
+                            let _ = self.progress_tx.send(progress);
+                        }
+                    }
+                }
+                MessageType::ChunkData => {
+                    let chunk_data = protocol::decode_chunk_data(&payload)?;
+
+                    let chunk = FileChunk {
+                        file_index: chunk_data.file_index,
+                        chunk_index: chunk_data.chunk_index,
+                        data: chunk_data.data.clone(),
+                        checksum: chunk_data.checksum,
+                        is_last: false,
+                    };
+
+                    // Calculate the offset for this chunk
+                    let offset = chunk_data.chunk_index * chunk_size as u64;
+
+                    let success = if let Some(ref mut writer) = current_writer {
+                        writer.write_chunk_at(&chunk, offset).await.is_ok()
+                    } else {
+                        false
+                    };
+
+                    let ack = ChunkAckPayload {
+                        file_index: chunk_data.file_index,
+                        chunk_index: chunk_data.chunk_index,
+                        success,
+                    };
+                    let ack_payload = protocol::encode_payload(&ack)?;
+                    protocol::write_frame(stream, MessageType::ChunkAck, &ack_payload).await?;
+
+                    if !success {
+                        return Err(Error::ChecksumMismatch {
+                            file: self.files[chunk_data.file_index].file_name().to_string(),
+                            chunk: chunk_data.chunk_index,
+                        });
+                    }
+
+                    // Update progress
+                    {
+                        let mut progress = self.progress_rx.borrow().clone();
+                        progress.file_bytes_transferred += chunk_data.data.len() as u64;
+                        progress.total_bytes_transferred += chunk_data.data.len() as u64;
+                        let elapsed = progress.started_at.elapsed().as_secs_f64();
+                        if elapsed > 0.0 {
+                            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                            {
+                                progress.speed_bps =
+                                    (progress.total_bytes_transferred as f64 / elapsed) as u64;
+                            }
+                            let remaining = progress.total_bytes - progress.total_bytes_transferred;
+                            if progress.speed_bps > 0 {
+                                progress.eta =
+                                    Some(Duration::from_secs(remaining / progress.speed_bps));
+                            }
+                        }
+                        let _ = self.progress_tx.send(progress);
+                    }
+                }
+                MessageType::TransferComplete => {
+                    if let Some(writer) = current_writer.take() {
+                        let _sha256 = writer.finalize_with_full_hash().await?;
+                    }
+                    break;
+                }
+                MessageType::TransferCancel => {
+                    return Err(Error::TransferCancelled);
+                }
+                _ => {
+                    return Err(Error::UnexpectedMessage {
+                        expected: "ChunkStart, ChunkData, or TransferComplete".to_string(),
+                        actual: format!("{:?}", header.message_type),
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn update_state(&self, state: TransferState) {
@@ -928,18 +1216,120 @@ impl ReceiveSession {
 }
 
 /// Resume information for interrupted transfers.
-#[derive(Debug, Clone)]
+///
+/// This struct is persisted to disk as `.localdrop-resume` files to enable
+/// resuming transfers across application restarts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResumeState {
-    /// Transfer ID
+    /// Unique transfer ID
     pub transfer_id: uuid::Uuid,
+    /// Share code (for reconnection)
+    pub code: String,
     /// Files in the transfer
     pub files: Vec<FileMetadata>,
-    /// Completed chunks per file
+    /// Completed chunks per file (file_index -> chunk_indices)
     pub completed_chunks: std::collections::HashMap<usize, Vec<u64>>,
+    /// SHA-256 hashes of completed files for verification
+    pub completed_file_hashes: std::collections::HashMap<usize, String>,
     /// Sender device name
     pub sender_device: String,
+    /// Sender device ID
+    pub sender_device_id: uuid::Uuid,
+    /// Output directory for received files
+    pub output_dir: PathBuf,
     /// When transfer started
     pub started_at: chrono::DateTime<chrono::Utc>,
+    /// When state was last updated
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Total bytes received so far
+    pub bytes_received: u64,
+    /// Total bytes to transfer
+    pub total_bytes: u64,
+    /// Protocol version used
+    pub protocol_version: String,
+}
+
+impl ResumeState {
+    /// Create a new resume state for a transfer.
+    #[must_use]
+    pub fn new(
+        transfer_id: uuid::Uuid,
+        code: &str,
+        files: Vec<FileMetadata>,
+        sender_device: &str,
+        sender_device_id: uuid::Uuid,
+        output_dir: PathBuf,
+    ) -> Self {
+        let total_bytes = files.iter().map(|f| f.size).sum();
+        let now = chrono::Utc::now();
+
+        Self {
+            transfer_id,
+            code: code.to_string(),
+            files,
+            completed_chunks: std::collections::HashMap::new(),
+            completed_file_hashes: std::collections::HashMap::new(),
+            sender_device: sender_device.to_string(),
+            sender_device_id,
+            output_dir,
+            started_at: now,
+            updated_at: now,
+            bytes_received: 0,
+            total_bytes,
+            protocol_version: format!("{}.{}", crate::PROTOCOL_VERSION.0, crate::PROTOCOL_VERSION.1),
+        }
+    }
+
+    /// Mark a chunk as completed.
+    pub fn mark_chunk_completed(&mut self, file_index: usize, chunk_index: u64, chunk_size: u64) {
+        let chunks = self.completed_chunks.entry(file_index).or_default();
+        if !chunks.contains(&chunk_index) {
+            chunks.push(chunk_index);
+            self.bytes_received += chunk_size;
+        }
+        self.updated_at = chrono::Utc::now();
+    }
+
+    /// Mark a file as completed with its hash.
+    pub fn mark_file_completed(&mut self, file_index: usize, sha256_hash: &[u8; 32]) {
+        // Convert hash to hex string without external dependency
+        let hash_hex: String = sha256_hash
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        self.completed_file_hashes.insert(file_index, hash_hex);
+        self.updated_at = chrono::Utc::now();
+    }
+
+    /// Check if a file is fully completed.
+    #[must_use]
+    pub fn is_file_completed(&self, file_index: usize) -> bool {
+        self.completed_file_hashes.contains_key(&file_index)
+    }
+
+    /// Check if all files are completed.
+    #[must_use]
+    pub fn is_transfer_completed(&self) -> bool {
+        self.completed_file_hashes.len() == self.files.len()
+    }
+
+    /// Get completed chunk indices for a file.
+    #[must_use]
+    pub fn get_completed_chunks(&self, file_index: usize) -> &[u64] {
+        self.completed_chunks
+            .get(&file_index)
+            .map_or(&[], |v| v.as_slice())
+    }
+
+    /// Calculate progress percentage.
+    #[must_use]
+    pub fn progress_percentage(&self) -> f64 {
+        if self.total_bytes == 0 {
+            100.0
+        } else {
+            (self.bytes_received as f64 / self.total_bytes as f64) * 100.0
+        }
+    }
 }
 
 #[cfg(test)]

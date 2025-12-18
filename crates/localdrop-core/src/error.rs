@@ -55,6 +55,14 @@ pub enum Error {
     #[error("transfer rejected by receiver")]
     TransferRejected,
 
+    /// Resume state doesn't match current transfer
+    #[error("resume mismatch: {0}")]
+    ResumeMismatch(String),
+
+    /// Resume request was rejected by sender
+    #[error("resume rejected: {0}")]
+    ResumeRejected(String),
+
     /// Cannot read file: permission denied (E007)
     #[error("cannot read file '{0}': permission denied")]
     PermissionDenied(String),

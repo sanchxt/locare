@@ -2,7 +2,7 @@
 //!
 //! This module handles device discovery on the local network using:
 //! - UDP broadcast for simple discovery
-//! - mDNS/DNS-SD for more robust discovery
+//! - mDNS/DNS-SD for more robust discovery (when `mdns` feature is enabled)
 //!
 //! ## Protocol
 //!
@@ -27,6 +27,18 @@
 //!   "preview_available": true
 //! }
 //! ```
+//!
+//! ## mDNS Discovery
+//!
+//! When the `mdns` feature is enabled, LocalDrop also advertises and discovers
+//! shares via mDNS/DNS-SD using the service type `_localdrop._tcp.local.`.
+//! This provides better reliability in networks where UDP broadcast is blocked.
+
+#[cfg(feature = "mdns")]
+pub mod mdns;
+
+mod hybrid;
+pub use hybrid::{HybridBroadcaster, HybridListener};
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -142,8 +154,12 @@ impl Broadcaster {
         )?;
 
         socket.set_broadcast(true)?;
-
         socket.set_reuse_address(true)?;
+
+        // macOS requires SO_REUSEPORT for multiple processes/threads to bind to the same port
+        // This improves reliability on macOS networks
+        #[cfg(target_os = "macos")]
+        socket.set_reuse_port(true)?;
 
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0);
         socket.bind(&addr.into())?;
@@ -258,6 +274,11 @@ impl Listener {
 
         // Allow address reuse (important for multiple listeners)
         socket.set_reuse_address(true)?;
+
+        // macOS requires SO_REUSEPORT for multiple processes/threads to bind to the same port
+        // This improves reliability on macOS networks
+        #[cfg(target_os = "macos")]
+        socket.set_reuse_port(true)?;
 
         // Bind to all interfaces on the discovery port
         let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);

@@ -12,6 +12,11 @@
 //! - File permissions (Unix only)
 //! - Timestamps (created, modified)
 //! - Symlinks: Option to follow or preserve
+//!
+//! ## Platform Support
+//!
+//! - Unix: Full permission support (mode bits), native symlinks
+//! - Windows: No permission support, symlink fallback to copy
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -19,6 +24,178 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+
+// ============================================================================
+// Platform-Aware Permission Handling
+// ============================================================================
+
+/// Get Unix file permissions from metadata.
+///
+/// Returns the mode bits on Unix systems, or None on other platforms.
+#[cfg(unix)]
+fn get_permissions(metadata: &std::fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode())
+}
+
+/// Get Unix file permissions from metadata.
+///
+/// Returns None on non-Unix platforms as they don't use mode bits.
+#[cfg(not(unix))]
+fn get_permissions(_metadata: &std::fs::Metadata) -> Option<u32> {
+    None
+}
+
+/// Apply Unix file permissions to a file.
+///
+/// On Unix systems, sets the mode bits. On other platforms, this is a no-op.
+///
+/// # Arguments
+///
+/// * `path` - Path to the file
+/// * `permissions` - Optional mode bits to apply
+///
+/// # Errors
+///
+/// Returns an error if permission change fails on Unix.
+#[cfg(unix)]
+pub fn apply_permissions(path: &Path, permissions: Option<u32>) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Some(mode) = permissions {
+        // Only apply user/group/other permissions (mask out file type bits)
+        let mode = mode & 0o7777;
+        let perms = std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+/// Apply Unix file permissions to a file.
+///
+/// No-op on non-Unix platforms.
+#[cfg(not(unix))]
+pub fn apply_permissions(_path: &Path, _permissions: Option<u32>) -> Result<()> {
+    // Windows doesn't use Unix-style permissions
+    Ok(())
+}
+
+// ============================================================================
+// Symlink Handling
+// ============================================================================
+
+/// How to handle symlinks during file enumeration and transfer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymlinkMode {
+    /// Follow symlinks and transfer the target content (default)
+    #[default]
+    Follow,
+    /// Preserve symlinks as symlinks (Unix only, falls back to Follow on Windows)
+    Preserve,
+    /// Skip symlinks entirely
+    Skip,
+}
+
+/// Read the target of a symlink.
+///
+/// # Arguments
+///
+/// * `path` - Path to the symlink
+/// * `is_symlink` - Whether the path is known to be a symlink
+///
+/// # Returns
+///
+/// The symlink target path, or None if not a symlink or read fails.
+fn get_symlink_target(path: &Path, is_symlink: bool) -> Option<PathBuf> {
+    if is_symlink {
+        std::fs::read_link(path).ok()
+    } else {
+        None
+    }
+}
+
+/// Create a symlink on Unix systems.
+///
+/// # Arguments
+///
+/// * `link_path` - Path where the symlink will be created
+/// * `target` - Target path the symlink points to
+///
+/// # Errors
+///
+/// Returns an error if symlink creation fails.
+#[cfg(unix)]
+pub fn create_symlink(link_path: &Path, target: &Path) -> Result<()> {
+    // Create parent directories if needed
+    if let Some(parent) = link_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::os::unix::fs::symlink(target, link_path)?;
+    Ok(())
+}
+
+/// Create a symlink on Windows systems.
+///
+/// Windows symlinks require elevated privileges or Developer Mode.
+/// This function falls back to copying the target content instead.
+///
+/// # Arguments
+///
+/// * `link_path` - Path where the symlink would be created
+/// * `target` - Target path the symlink points to
+///
+/// # Errors
+///
+/// Returns an error if the fallback copy fails.
+#[cfg(windows)]
+pub fn create_symlink(link_path: &Path, target: &Path) -> Result<()> {
+    tracing::warn!(
+        "Symlinks require elevation on Windows, copying target instead: {} -> {}",
+        link_path.display(),
+        target.display()
+    );
+
+    // Create parent directories if needed
+    if let Some(parent) = link_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Fall back to copying
+    if target.is_dir() {
+        copy_dir_recursive(target, link_path)?;
+    } else if target.exists() {
+        std::fs::copy(target, link_path)?;
+    } else {
+        // Target doesn't exist, create an empty file as placeholder
+        std::fs::write(link_path, b"")?;
+        tracing::warn!(
+            "Symlink target does not exist, created empty placeholder: {}",
+            link_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Recursively copy a directory (used as symlink fallback on Windows).
+#[cfg(windows)]
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
 
 /// Metadata for a file being transferred.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,10 +232,21 @@ impl FileMetadata {
     ///
     /// Returns an error if the file cannot be read.
     pub fn from_path(path: &Path, base: &Path) -> Result<Self> {
-        let metadata = std::fs::metadata(path)?;
-        let relative_path = path.strip_prefix(base).unwrap_or(path).to_path_buf();
+        // Use symlink_metadata to get info about the link itself, not the target
+        let symlink_metadata = std::fs::symlink_metadata(path)?;
+        let is_symlink = symlink_metadata.is_symlink();
 
+        // For size and other attributes, follow the symlink if it exists
+        let metadata = if is_symlink {
+            std::fs::metadata(path).unwrap_or(symlink_metadata.clone())
+        } else {
+            symlink_metadata.clone()
+        };
+
+        let relative_path = path.strip_prefix(base).unwrap_or(path).to_path_buf();
         let mime_type = mime_guess::from_path(path).first().map(|m| m.to_string());
+        let permissions = get_permissions(&metadata);
+        let symlink_target = get_symlink_target(path, is_symlink);
 
         Ok(Self {
             relative_path,
@@ -66,9 +254,9 @@ impl FileMetadata {
             mime_type,
             created: metadata.created().ok(),
             modified: metadata.modified().ok(),
-            permissions: None, // TODO: Unix permissions
-            is_symlink: metadata.is_symlink(),
-            symlink_target: None, // TODO: Read symlink target
+            permissions,
+            is_symlink,
+            symlink_target,
         })
     }
 
@@ -100,12 +288,61 @@ pub struct FileChunk {
 /// Options for file enumeration.
 #[derive(Debug, Clone, Default)]
 pub struct EnumerateOptions {
-    /// Follow symlinks
-    pub follow_symlinks: bool,
-    /// Include hidden files
+    /// How to handle symlinks during enumeration
+    pub symlink_mode: SymlinkMode,
+    /// Include hidden files (files starting with '.')
     pub include_hidden: bool,
-    /// Maximum depth for directories
+    /// Maximum depth for directories (None = unlimited)
     pub max_depth: Option<usize>,
+}
+
+impl EnumerateOptions {
+    /// Create options that follow symlinks (default behavior).
+    #[must_use]
+    pub fn follow_symlinks() -> Self {
+        Self {
+            symlink_mode: SymlinkMode::Follow,
+            ..Default::default()
+        }
+    }
+
+    /// Create options that preserve symlinks as symlinks.
+    #[must_use]
+    pub fn preserve_symlinks() -> Self {
+        Self {
+            symlink_mode: SymlinkMode::Preserve,
+            ..Default::default()
+        }
+    }
+
+    /// Create options that skip symlinks entirely.
+    #[must_use]
+    pub fn skip_symlinks() -> Self {
+        Self {
+            symlink_mode: SymlinkMode::Skip,
+            ..Default::default()
+        }
+    }
+
+    /// Set whether to include hidden files.
+    #[must_use]
+    pub fn with_hidden(mut self, include_hidden: bool) -> Self {
+        self.include_hidden = include_hidden;
+        self
+    }
+
+    /// Set maximum directory depth.
+    #[must_use]
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = Some(max_depth);
+        self
+    }
+
+    /// Check if symlinks should be followed based on symlink_mode.
+    #[must_use]
+    pub fn should_follow_symlinks(&self) -> bool {
+        matches!(self.symlink_mode, SymlinkMode::Follow)
+    }
 }
 
 /// Enumerate files for sharing.
@@ -140,12 +377,13 @@ fn enumerate_directory(
     files: &mut Vec<FileMetadata>,
 ) -> Result<()> {
     let walker = walkdir::WalkDir::new(dir)
-        .follow_links(options.follow_symlinks)
+        .follow_links(options.should_follow_symlinks())
         .max_depth(options.max_depth.unwrap_or(usize::MAX));
 
     for entry in walker.into_iter().filter_map(std::result::Result::ok) {
         let path = entry.path();
 
+        // Skip hidden files if requested
         if !options.include_hidden {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.starts_with('.') {
@@ -154,7 +392,30 @@ fn enumerate_directory(
             }
         }
 
-        if path.is_file() {
+        // Get symlink metadata (info about the link itself)
+        let symlink_meta = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(_) => continue, // Skip files we can't read metadata for
+        };
+
+        let is_symlink = symlink_meta.is_symlink();
+
+        // Handle symlinks according to mode
+        if is_symlink {
+            match options.symlink_mode {
+                SymlinkMode::Skip => continue,
+                SymlinkMode::Preserve => {
+                    // Include the symlink itself as a file entry
+                    files.push(FileMetadata::from_path(path, base)?);
+                }
+                SymlinkMode::Follow => {
+                    // Follow the symlink - walkdir handles this, include if it's a file
+                    if path.is_file() {
+                        files.push(FileMetadata::from_path(path, base)?);
+                    }
+                }
+            }
+        } else if path.is_file() {
             files.push(FileMetadata::from_path(path, base)?);
         }
     }
@@ -318,6 +579,58 @@ impl FileWriter {
         })
     }
 
+    /// Create a new file writer for resuming a transfer.
+    ///
+    /// Opens an existing file for appending/writing at arbitrary positions.
+    /// The file will be pre-allocated to the expected size if it doesn't already exist
+    /// or is smaller than expected.
+    ///
+    /// # Arguments
+    ///
+    /// * `output_path` - Path to write the file to
+    /// * `expected_size` - Expected total file size
+    /// * `resume_offset` - Number of bytes already written (for progress tracking)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be opened.
+    pub async fn new_resumable(
+        output_path: PathBuf,
+        expected_size: u64,
+        resume_offset: u64,
+    ) -> Result<Self> {
+        use tokio::fs::OpenOptions;
+
+        if let Some(parent) = output_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        // Open file for read/write, create if doesn't exist
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&output_path)
+            .await?;
+
+        // Pre-allocate file to expected size if needed
+        let metadata = file.metadata().await?;
+        if metadata.len() < expected_size {
+            file.set_len(expected_size).await?;
+        }
+
+        Ok(Self {
+            output_path,
+            expected_size,
+            file: Some(file),
+            bytes_written: resume_offset,
+            // Note: For resumed transfers, we can't continue the hash from the middle,
+            // so we'll compute the full file hash at finalization time
+            sha256_hasher: sha2::Sha256::new(),
+        })
+    }
+
     /// Write a chunk to the file.
     ///
     /// Verifies the xxHash64 checksum before writing.
@@ -350,6 +663,46 @@ impl FileWriter {
         Ok(())
     }
 
+    /// Write a chunk at a specific offset in the file.
+    ///
+    /// Used for resumable transfers where chunks may arrive out of order
+    /// or need to be written at specific positions.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunk` - The chunk data to write
+    /// * `offset` - The byte offset in the file where the chunk should be written
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checksum verification fails, seek fails, or write fails.
+    pub async fn write_chunk_at(&mut self, chunk: &FileChunk, offset: u64) -> Result<()> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+        use crate::crypto::xxhash64;
+        use crate::error::Error;
+
+        let computed_checksum = xxhash64(&chunk.data);
+        if computed_checksum != chunk.checksum {
+            return Err(Error::ChecksumMismatch {
+                file: self.output_path.display().to_string(),
+                chunk: chunk.chunk_index,
+            });
+        }
+
+        if let Some(ref mut file) = self.file {
+            file.seek(std::io::SeekFrom::Start(offset)).await?;
+            file.write_all(&chunk.data).await?;
+        }
+
+        // Note: For out-of-order writes, we don't update the hasher here
+        // since SHA-256 requires sequential data. The hash will be computed
+        // during finalization by reading the complete file.
+        self.bytes_written += chunk.data.len() as u64;
+
+        Ok(())
+    }
+
     /// Finalize the file and return the SHA-256 hash.
     ///
     /// # Errors
@@ -366,6 +719,58 @@ impl FileWriter {
         self.file = None;
 
         Ok(self.sha256_hasher.finalize().into())
+    }
+
+    /// Finalize the file and compute SHA-256 hash from the complete file.
+    ///
+    /// This is used for resumed transfers where chunks may have been written
+    /// out of order, making the incremental hash invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or synced.
+    pub async fn finalize_with_full_hash(mut self) -> Result<[u8; 32]> {
+        use sha2::Digest;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        if let Some(ref mut file) = self.file {
+            file.flush().await?;
+            file.sync_all().await?;
+        }
+        self.file = None;
+
+        // Read the complete file and compute hash
+        let mut hasher = sha2::Sha256::new();
+        let mut file = tokio::fs::File::open(&self.output_path).await?;
+        let mut buffer = vec![0u8; 64 * 1024]; // 64KB buffer
+
+        loop {
+            let n = file.read(&mut buffer).await?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+
+        Ok(hasher.finalize().into())
+    }
+
+    /// Get the current bytes written count.
+    #[must_use]
+    pub const fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+
+    /// Get the expected file size.
+    #[must_use]
+    pub const fn expected_size(&self) -> u64 {
+        self.expected_size
+    }
+
+    /// Check if writing is complete.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.bytes_written >= self.expected_size
     }
 }
 

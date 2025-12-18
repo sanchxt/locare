@@ -36,6 +36,10 @@ toml = { workspace = true }
 # Networking
 socket2 = { workspace = true }
 
+# mDNS/DNS-SD discovery (optional)
+mdns-sd = { workspace = true, optional = true }
+flume = { workspace = true, optional = true }
+
 # File handling
 walkdir = { workspace = true }
 mime_guess = { workspace = true }
@@ -74,9 +78,10 @@ rand = { workspace = true }
 walkdir = { workspace = true }
 
 [features]
-default = []
+default = ["mdns"]
+mdns = ["dep:mdns-sd", "dep:flume"]
 web = ["dep:axum", "dep:tower", "dep:tower-http"]
-full = ["web"]
+full = ["mdns", "web"]
 
 [lints]
 workspace = true
