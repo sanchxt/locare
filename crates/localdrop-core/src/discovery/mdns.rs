@@ -136,8 +136,8 @@ impl MdnsDiscoveredShare {
 ///
 /// Registers a LocalDrop share as an mDNS service on the local network.
 pub struct MdnsBroadcaster {
-    /// The mDNS daemon
-    daemon: ServiceDaemon,
+    /// The mDNS daemon (wrapped in Option to support Drop)
+    daemon: Option<ServiceDaemon>,
     /// Instance name for the registered service
     instance_name: Arc<Mutex<Option<String>>>,
 }
@@ -153,7 +153,7 @@ impl MdnsBroadcaster {
             ServiceDaemon::new().map_err(|e| Error::Internal(format!("mDNS daemon error: {e}")))?;
 
         Ok(Self {
-            daemon,
+            daemon: Some(daemon),
             instance_name: Arc::new(Mutex::new(None)),
         })
     }
@@ -202,6 +202,8 @@ impl MdnsBroadcaster {
 
         // Register the service
         self.daemon
+            .as_ref()
+            .ok_or_else(|| Error::Internal("mDNS daemon already shutdown".to_string()))?
             .register(service_info)
             .map_err(|e| Error::Internal(format!("Failed to register mDNS service: {e}")))?;
 
@@ -228,6 +230,8 @@ impl MdnsBroadcaster {
             let full_name = format!("{instance_name}.{SERVICE_TYPE}");
 
             self.daemon
+                .as_ref()
+                .ok_or_else(|| Error::Internal("mDNS daemon already shutdown".to_string()))?
                 .unregister(&full_name)
                 .map_err(|e| Error::Internal(format!("Failed to unregister mDNS service: {e}")))?;
 
@@ -242,11 +246,23 @@ impl MdnsBroadcaster {
     /// # Errors
     ///
     /// Returns an error if the shutdown fails.
-    pub fn shutdown(self) -> Result<()> {
-        self.daemon
-            .shutdown()
-            .map_err(|e| Error::Internal(format!("Failed to shutdown mDNS daemon: {e}")))?;
+    pub fn shutdown(mut self) -> Result<()> {
+        if let Some(daemon) = self.daemon.take() {
+            daemon
+                .shutdown()
+                .map_err(|e| Error::Internal(format!("Failed to shutdown mDNS daemon: {e}")))?;
+        }
         Ok(())
+    }
+}
+
+impl Drop for MdnsBroadcaster {
+    fn drop(&mut self) {
+        if let Some(daemon) = self.daemon.take() {
+            if let Err(e) = daemon.shutdown() {
+                tracing::debug!("mDNS broadcaster shutdown during drop: {e}");
+            }
+        }
     }
 }
 
@@ -254,8 +270,8 @@ impl MdnsBroadcaster {
 ///
 /// Discovers LocalDrop shares advertised via mDNS on the local network.
 pub struct MdnsListener {
-    /// The mDNS daemon
-    daemon: ServiceDaemon,
+    /// The mDNS daemon (wrapped in Option to support Drop)
+    daemon: Option<ServiceDaemon>,
     /// Receiver for service events
     receiver: flume::Receiver<ServiceEvent>,
 }
@@ -274,7 +290,10 @@ impl MdnsListener {
             .browse(SERVICE_TYPE)
             .map_err(|e| Error::Internal(format!("Failed to browse mDNS services: {e}")))?;
 
-        Ok(Self { daemon, receiver })
+        Ok(Self {
+            daemon: Some(daemon),
+            receiver,
+        })
     }
 
     /// Find a share by code.
@@ -367,11 +386,23 @@ impl MdnsListener {
     /// # Errors
     ///
     /// Returns an error if the shutdown fails.
-    pub fn shutdown(self) -> Result<()> {
-        self.daemon
-            .shutdown()
-            .map_err(|e| Error::Internal(format!("Failed to shutdown mDNS daemon: {e}")))?;
+    pub fn shutdown(mut self) -> Result<()> {
+        if let Some(daemon) = self.daemon.take() {
+            daemon
+                .shutdown()
+                .map_err(|e| Error::Internal(format!("Failed to shutdown mDNS daemon: {e}")))?;
+        }
         Ok(())
+    }
+}
+
+impl Drop for MdnsListener {
+    fn drop(&mut self) {
+        if let Some(daemon) = self.daemon.take() {
+            if let Err(e) = daemon.shutdown() {
+                tracing::debug!("mDNS listener shutdown during drop: {e}");
+            }
+        }
     }
 }
 
