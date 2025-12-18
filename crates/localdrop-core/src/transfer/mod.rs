@@ -501,6 +501,23 @@ impl ShareSession {
             let chunks = chunker.read_chunks(&file_path, file_index).await?;
             let total_chunks = chunks.len() as u64;
 
+            // Handle empty files (0 bytes) - send ChunkStart with total_chunks=0
+            // so the receiver knows to create an empty file
+            if chunks.is_empty() {
+                let start = ChunkStartPayload {
+                    file_index,
+                    chunk_index: 0,
+                    total_chunks: 0,
+                };
+                let start_payload = protocol::encode_payload(&start)?;
+                protocol::write_frame(stream, MessageType::ChunkStart, &start_payload).await?;
+                tracing::debug!(
+                    "Sent empty file marker for file {}: {}",
+                    file_index,
+                    file.file_name()
+                );
+            }
+
             for chunk in chunks {
                 let start = ChunkStartPayload {
                     file_index,

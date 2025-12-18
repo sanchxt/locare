@@ -381,12 +381,26 @@ impl MdnsListener {
         discovered.into_values().collect()
     }
 
+    /// Stop browsing for services.
+    ///
+    /// This should be called before shutdown to properly clean up the browse operation.
+    fn stop_browsing(&self) {
+        if let Some(ref daemon) = self.daemon {
+            if let Err(e) = daemon.stop_browse(SERVICE_TYPE) {
+                tracing::debug!("Failed to stop mDNS browse: {e}");
+            }
+        }
+    }
+
     /// Shutdown the listener.
     ///
     /// # Errors
     ///
     /// Returns an error if the shutdown fails.
     pub fn shutdown(mut self) -> Result<()> {
+        // Stop browsing first to properly clean up
+        self.stop_browsing();
+
         if let Some(daemon) = self.daemon.take() {
             daemon
                 .shutdown()
@@ -398,6 +412,13 @@ impl MdnsListener {
 
 impl Drop for MdnsListener {
     fn drop(&mut self) {
+        // Stop browsing first to prevent "sending on a closed channel" error
+        if let Some(ref daemon) = self.daemon {
+            if let Err(e) = daemon.stop_browse(SERVICE_TYPE) {
+                tracing::debug!("Failed to stop mDNS browse during drop: {e}");
+            }
+        }
+
         if let Some(daemon) = self.daemon.take() {
             if let Err(e) = daemon.shutdown() {
                 tracing::debug!("mDNS listener shutdown during drop: {e}");

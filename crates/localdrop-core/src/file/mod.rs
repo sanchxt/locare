@@ -819,6 +819,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_chunk_empty_file() {
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let file_path = temp_dir.path().join("empty.txt");
+        std::fs::write(&file_path, b"").expect("write empty file");
+
+        let chunker = FileChunker::new(1024 * 1024);
+        let chunks = chunker
+            .read_chunks(&file_path, 0)
+            .await
+            .expect("read chunks");
+
+        assert!(chunks.is_empty(), "Empty file should produce zero chunks");
+    }
+
+    #[tokio::test]
+    async fn test_file_writer_empty_file() {
+        let temp_dir = TempDir::new().expect("create temp dir");
+        let output_path = temp_dir.path().join("empty_output.txt");
+
+        // Create writer for empty file
+        let writer = FileWriter::new(output_path.clone(), 0)
+            .await
+            .expect("create writer");
+
+        // Finalize without writing any chunks
+        let sha256 = writer.finalize().await.expect("finalize");
+
+        // Verify file exists and is empty
+        assert!(output_path.exists(), "Empty file should be created");
+        let content = std::fs::read(&output_path).expect("read file");
+        assert!(content.is_empty(), "File should be empty");
+
+        // SHA-256 of empty data
+        let expected_sha256 = crate::crypto::sha256(b"");
+        assert_eq!(sha256, expected_sha256, "SHA-256 of empty file should match");
+    }
+
+    #[tokio::test]
     async fn test_chunk_small_file() {
         let temp_dir = TempDir::new().expect("create temp dir");
         let file_path = temp_dir.path().join("small.txt");
