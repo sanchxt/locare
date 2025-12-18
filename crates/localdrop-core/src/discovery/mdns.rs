@@ -100,22 +100,19 @@ impl MdnsDiscoveredShare {
         let properties = info.get_properties();
 
         // Helper to extract string value from TxtProperty
-        let get_str = |key: &str| -> Option<String> {
-            properties.get(key).map(|p| p.val_str().to_string())
-        };
+        let get_str =
+            |key: &str| -> Option<String> { properties.get(key).map(|p| p.val_str().to_string()) };
 
         let code = get_str(txt_keys::CODE)?;
         let device_name = get_str(txt_keys::DEVICE_NAME)?;
-        let device_id = get_str(txt_keys::DEVICE_ID)
-            .and_then(|s| Uuid::parse_str(&s).ok())?;
+        let device_id = get_str(txt_keys::DEVICE_ID).and_then(|s| Uuid::parse_str(&s).ok())?;
         let file_count = get_str(txt_keys::FILE_COUNT)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         let total_size = get_str(txt_keys::TOTAL_SIZE)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let protocol_version = get_str(txt_keys::VERSION)
-            .unwrap_or_else(|| "1.0".to_string());
+        let protocol_version = get_str(txt_keys::VERSION).unwrap_or_else(|| "1.0".to_string());
 
         // Get the first IPv4 address
         let addresses = info.get_addresses();
@@ -178,8 +175,10 @@ impl MdnsBroadcaster {
         let txt_props: Vec<_> = properties.to_txt_properties();
 
         // Get local hostname and ensure it ends with .local.
-        let raw_hostname = hostname::get()
-            .map_or_else(|_| "localhost".to_string(), |h| h.to_string_lossy().to_string());
+        let raw_hostname = hostname::get().map_or_else(
+            |_| "localhost".to_string(),
+            |h| h.to_string_lossy().to_string(),
+        );
 
         // mDNS requires hostnames to end with .local.
         let hostname = if raw_hostname.ends_with(".local.") {
@@ -299,10 +298,8 @@ impl MdnsListener {
             }
 
             // Use tokio timeout for async compatibility
-            let result = tokio::time::timeout(remaining, async {
-                self.receiver.recv_async().await
-            })
-            .await;
+            let result =
+                tokio::time::timeout(remaining, async { self.receiver.recv_async().await }).await;
 
             match result {
                 Ok(Ok(event)) => {
@@ -346,10 +343,8 @@ impl MdnsListener {
                 break;
             }
 
-            let result = tokio::time::timeout(remaining, async {
-                self.receiver.recv_async().await
-            })
-            .await;
+            let result =
+                tokio::time::timeout(remaining, async { self.receiver.recv_async().await }).await;
 
             match result {
                 Ok(Ok(event)) => {
@@ -392,7 +387,7 @@ mod tests {
             device_id: Uuid::nil(),
             transfer_port: 52530,
             file_count: 5,
-            total_size: 1024000,
+            total_size: 1_024_000,
             protocol_version: "1.0".to_string(),
         };
 

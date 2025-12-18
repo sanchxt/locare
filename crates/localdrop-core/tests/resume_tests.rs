@@ -112,7 +112,10 @@ fn test_resume_state_progress() {
     let half_bytes = state.total_bytes / 2;
     state.bytes_received = half_bytes;
     let progress = state.progress_percentage();
-    assert!(progress > 49.0 && progress < 51.0, "Progress should be ~50%");
+    assert!(
+        progress > 49.0 && progress < 51.0,
+        "Progress should be ~50%"
+    );
 
     // Mark all bytes as received
     state.bytes_received = state.total_bytes;

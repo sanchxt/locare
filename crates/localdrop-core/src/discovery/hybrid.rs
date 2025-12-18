@@ -415,9 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_hybrid_broadcaster_start_stop() {
-        let broadcaster = HybridBroadcaster::new(0)
-            .await
-            .expect("create broadcaster");
+        let broadcaster = HybridBroadcaster::new(0).await.expect("create broadcaster");
         let code = generate_code();
         let device_id = Uuid::new_v4();
         let packet = DiscoveryPacket::new(&code, "Test Device", device_id, 52530, 1, 1024);

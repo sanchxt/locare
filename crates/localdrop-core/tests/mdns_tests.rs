@@ -87,7 +87,10 @@ fn test_mdns_broadcaster_creation() {
     // Should succeed on most systems with mDNS support
     // May fail in restricted environments (CI, containers)
     if result.is_err() {
-        eprintln!("mDNS broadcaster creation failed (may be expected in CI): {:?}", result.err());
+        eprintln!(
+            "mDNS broadcaster creation failed (may be expected in CI): {:?}",
+            result.err()
+        );
     }
 }
 
@@ -121,7 +124,11 @@ async fn test_mdns_service_registration_lifecycle() {
 
     // Unregister service
     let result = broadcaster.unregister().await;
-    assert!(result.is_ok(), "Unregistration should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Unregistration should succeed: {:?}",
+        result
+    );
 
     // Shutdown
     let result = broadcaster.shutdown();
@@ -139,7 +146,10 @@ fn test_mdns_listener_creation() {
 
     // Should succeed on most systems with mDNS support
     if result.is_err() {
-        eprintln!("mDNS listener creation failed (may be expected in CI): {:?}", result.err());
+        eprintln!(
+            "mDNS listener creation failed (may be expected in CI): {:?}",
+            result.err()
+        );
     }
 }
 
@@ -354,7 +364,9 @@ async fn test_hybrid_discovery_roundtrip() {
     let port = 53600;
 
     // Create broadcaster
-    let broadcaster = HybridBroadcaster::new(port).await.expect("create broadcaster");
+    let broadcaster = HybridBroadcaster::new(port)
+        .await
+        .expect("create broadcaster");
 
     let code = CodeGenerator::new().generate().expect("generate code");
     let device_id = Uuid::new_v4();

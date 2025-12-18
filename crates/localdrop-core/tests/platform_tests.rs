@@ -9,8 +9,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 
 use localdrop_core::file::{
-    apply_permissions, create_symlink, enumerate_files, EnumerateOptions, FileMetadata,
-    SymlinkMode,
+    apply_permissions, create_symlink, enumerate_files, EnumerateOptions, FileMetadata, SymlinkMode,
 };
 
 // ============================================================================
@@ -46,10 +45,7 @@ mod unix_tests {
 
         // The captured mode includes file type bits, so mask them out
         let captured_mode = metadata.permissions.unwrap() & 0o7777;
-        assert_eq!(
-            captured_mode, 0o755,
-            "Permissions should match what we set"
-        );
+        assert_eq!(captured_mode, 0o755, "Permissions should match what we set");
     }
 
     /// Test that permissions can be applied to a file.
@@ -237,7 +233,10 @@ fn test_symlink_follow_mode() {
     let files = enumerate_files(&[file_path.clone()], &options).expect("enumerate");
 
     assert_eq!(files.len(), 1, "Should find the file");
-    assert!(!files[0].is_symlink, "Regular file should not be marked as symlink");
+    assert!(
+        !files[0].is_symlink,
+        "Regular file should not be marked as symlink"
+    );
 }
 
 /// Test that skip symlinks mode works on all platforms.

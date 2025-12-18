@@ -238,9 +238,9 @@ impl FileMetadata {
 
         // For size and other attributes, follow the symlink if it exists
         let metadata = if is_symlink {
-            std::fs::metadata(path).unwrap_or(symlink_metadata.clone())
+            std::fs::metadata(path).unwrap_or_else(|_| symlink_metadata.clone())
         } else {
-            symlink_metadata.clone()
+            symlink_metadata
         };
 
         let relative_path = path.strip_prefix(base).unwrap_or(path).to_path_buf();
@@ -393,9 +393,8 @@ fn enumerate_directory(
         }
 
         // Get symlink metadata (info about the link itself)
-        let symlink_meta = match std::fs::symlink_metadata(path) {
-            Ok(m) => m,
-            Err(_) => continue, // Skip files we can't read metadata for
+        let Ok(symlink_meta) = std::fs::symlink_metadata(path) else {
+            continue; // Skip files we can't read metadata for
         };
 
         let is_symlink = symlink_meta.is_symlink();
@@ -403,7 +402,7 @@ fn enumerate_directory(
         // Handle symlinks according to mode
         if is_symlink {
             match options.symlink_mode {
-                SymlinkMode::Skip => continue,
+                SymlinkMode::Skip => {} // Do nothing, loop continues naturally
                 SymlinkMode::Preserve => {
                     // Include the symlink itself as a file entry
                     files.push(FileMetadata::from_path(path, base)?);

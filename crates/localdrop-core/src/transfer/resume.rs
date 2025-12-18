@@ -37,7 +37,7 @@ impl ResumeManager {
     ///
     /// Returns an error if the resume directory cannot be created.
     pub async fn new() -> Result<Self> {
-        let resume_dir = Self::default_resume_dir()?;
+        let resume_dir = Self::default_resume_dir();
         Self::with_dir(resume_dir).await
     }
 
@@ -49,25 +49,22 @@ impl ResumeManager {
     pub async fn with_dir(resume_dir: PathBuf) -> Result<Self> {
         // Ensure the directory exists
         fs::create_dir_all(&resume_dir).await.map_err(|e| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to create resume directory: {e}"),
-            ))
+            Error::Io(std::io::Error::other(format!(
+                "Failed to create resume directory: {e}"
+            )))
         })?;
 
         Ok(Self { resume_dir })
     }
 
     /// Get the default platform-specific resume directory.
-    fn default_resume_dir() -> Result<PathBuf> {
-        let data_dir = directories::ProjectDirs::from("com", "localdrop", "LocalDrop")
-            .map(|dirs| dirs.data_dir().to_path_buf())
-            .unwrap_or_else(|| {
-                // Fallback to current directory
-                PathBuf::from(".localdrop")
-            });
+    fn default_resume_dir() -> PathBuf {
+        let data_dir = directories::ProjectDirs::from("com", "localdrop", "LocalDrop").map_or_else(
+            || PathBuf::from(".localdrop"), // Fallback to current directory
+            |dirs| dirs.data_dir().to_path_buf(),
+        );
 
-        Ok(data_dir.join("resume"))
+        data_dir.join("resume")
     }
 
     /// Get the file path for a transfer's resume state.
@@ -163,10 +160,7 @@ impl ResumeManager {
             let path = entry.path();
 
             // Skip non-resume files
-            if !path
-                .extension()
-                .is_some_and(|ext| ext == "localdrop-resume")
-            {
+            if path.extension().is_none_or(|ext| ext != "localdrop-resume") {
                 // Check if filename ends with the extension (since it includes the dot)
                 let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if !filename.ends_with(RESUME_FILE_EXTENSION) {
