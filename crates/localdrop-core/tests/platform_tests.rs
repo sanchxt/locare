@@ -1,4 +1,4 @@
-//! Platform-specific tests for LocalDrop.
+//! Platform-specific tests for `LocalDrop`.
 //!
 //! These tests verify cross-platform compatibility for:
 //! - File permissions (Unix vs Windows)
@@ -155,8 +155,7 @@ mod unix_tests {
 
         // Enumerate with preserve mode
         let options = EnumerateOptions::preserve_symlinks();
-        let files =
-            enumerate_files(&[link_path.clone()], &options).expect("enumerate with preserve");
+        let files = enumerate_files(&[link_path], &options).expect("enumerate with preserve");
 
         assert_eq!(files.len(), 1, "Should find the symlink");
         assert!(files[0].is_symlink, "Should be marked as symlink");
@@ -230,7 +229,7 @@ fn test_symlink_follow_mode() {
 
     // Enumerate with follow mode (default)
     let options = EnumerateOptions::follow_symlinks();
-    let files = enumerate_files(&[file_path.clone()], &options).expect("enumerate");
+    let files = enumerate_files(&[file_path], &options).expect("enumerate");
 
     assert_eq!(files.len(), 1, "Should find the file");
     assert!(
@@ -250,12 +249,12 @@ fn test_symlink_skip_mode() {
 
     // Enumerate with skip mode
     let options = EnumerateOptions::skip_symlinks();
-    let files = enumerate_files(&[file_path.clone()], &options).expect("enumerate");
+    let files = enumerate_files(&[file_path], &options).expect("enumerate");
 
     assert_eq!(files.len(), 1, "Should find the file");
 }
 
-/// Test that EnumerateOptions builder methods work correctly.
+/// Test that `EnumerateOptions` builder methods work correctly.
 #[test]
 fn test_enumerate_options_builder() {
     // Test default
@@ -376,7 +375,7 @@ fn test_max_depth() {
     // Should find root.txt and l1.txt, but not l2.txt or l3.txt
     assert_eq!(files.len(), 2, "Should find 2 files within depth limit");
 
-    let names: Vec<_> = files.iter().map(|f| f.file_name()).collect();
+    let names: Vec<_> = files.iter().map(FileMetadata::file_name).collect();
     assert!(names.contains(&"root.txt"));
     assert!(names.contains(&"l1.txt"));
 }

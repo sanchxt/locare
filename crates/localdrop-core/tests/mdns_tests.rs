@@ -17,7 +17,7 @@ use localdrop_core::discovery::{
 // mDNS Properties Tests
 // ============================================================================
 
-/// Test that MdnsProperties can be converted to TXT properties correctly.
+/// Test that `MdnsProperties` can be converted to TXT properties correctly.
 #[test]
 fn test_mdns_properties_to_txt_properties() {
     let props = MdnsProperties {
@@ -26,7 +26,7 @@ fn test_mdns_properties_to_txt_properties() {
         device_id: Uuid::nil(),
         transfer_port: 52530,
         file_count: 5,
-        total_size: 1024000,
+        total_size: 1_024_000,
         protocol_version: "1.0".to_string(),
     };
 
@@ -117,22 +117,18 @@ async fn test_mdns_service_registration_lifecycle() {
 
     // Register service
     let result = broadcaster.register(props).await;
-    assert!(result.is_ok(), "Registration should succeed: {:?}", result);
+    assert!(result.is_ok(), "Registration should succeed: {result:?}");
 
     // Give it a moment to propagate
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Unregister service
     let result = broadcaster.unregister().await;
-    assert!(
-        result.is_ok(),
-        "Unregistration should succeed: {:?}",
-        result
-    );
+    assert!(result.is_ok(), "Unregistration should succeed: {result:?}");
 
     // Shutdown
     let result = broadcaster.shutdown();
-    assert!(result.is_ok(), "Shutdown should succeed: {:?}", result);
+    assert!(result.is_ok(), "Shutdown should succeed: {result:?}");
 }
 
 // ============================================================================
@@ -175,7 +171,7 @@ async fn test_mdns_listener_scan() {
     let _ = listener.shutdown();
 }
 
-/// Test mDNS find with timeout returns CodeNotFound.
+/// Test mDNS find with timeout returns `CodeNotFound`.
 #[tokio::test]
 async fn test_mdns_listener_find_timeout() {
     let listener = match MdnsListener::new() {

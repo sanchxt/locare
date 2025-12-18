@@ -15,7 +15,7 @@ use localdrop_core::transfer::ResumeState;
 // Resume State Tests
 // ============================================================================
 
-/// Test that ResumeState can be serialized and deserialized correctly.
+/// Test that `ResumeState` can be serialized and deserialized correctly.
 #[test]
 fn test_resume_state_serialization() {
     let state = create_test_resume_state("TEST-123");
@@ -36,7 +36,7 @@ fn test_resume_state_serialization() {
     assert_eq!(restored.protocol_version, state.protocol_version);
 }
 
-/// Test that ResumeState correctly tracks chunk completion.
+/// Test that `ResumeState` correctly tracks chunk completion.
 #[test]
 fn test_resume_state_chunk_tracking() {
     let mut state = create_test_resume_state("TEST-456");
@@ -106,7 +106,7 @@ fn test_resume_state_progress() {
     let mut state = create_test_resume_state("TEST-XYZ");
 
     // Initially 0%
-    assert_eq!(state.progress_percentage(), 0.0);
+    assert!((state.progress_percentage() - 0.0).abs() < f64::EPSILON);
 
     // Mark half the bytes as received
     let half_bytes = state.total_bytes / 2;
@@ -135,7 +135,7 @@ fn test_resume_state_empty_transfer() {
     );
 
     // Empty transfer should be 100% complete
-    assert_eq!(state.progress_percentage(), 100.0);
+    assert!((state.progress_percentage() - 100.0).abs() < f64::EPSILON);
     assert!(state.is_transfer_completed());
 }
 
@@ -143,7 +143,7 @@ fn test_resume_state_empty_transfer() {
 // Resume Manager Tests
 // ============================================================================
 
-/// Test that ResumeManager can save and load states.
+/// Test that `ResumeManager` can save and load states.
 #[tokio::test]
 async fn test_resume_manager_persistence() {
     let temp_dir = TempDir::new().expect("create temp dir");
@@ -221,11 +221,11 @@ async fn test_resume_manager_list_ordering() {
     manager.save(&state3).await.expect("save 3");
 
     // List should be sorted by updated_at descending
-    let states = manager.list().await.expect("list");
-    assert_eq!(states.len(), 3);
-    assert_eq!(states[0].code, "THIRD");
-    assert_eq!(states[1].code, "SECOND");
-    assert_eq!(states[2].code, "FIRST");
+    let listed = manager.list().await.expect("list");
+    assert_eq!(listed.len(), 3);
+    assert_eq!(listed[0].code, "THIRD");
+    assert_eq!(listed[1].code, "SECOND");
+    assert_eq!(listed[2].code, "FIRST");
 }
 
 /// Test finding by code with multiple states.
@@ -272,7 +272,7 @@ async fn test_resume_manager_delete_nonexistent() {
 // FileWriter Resumable Tests
 // ============================================================================
 
-/// Test resumable FileWriter creation and offset writing.
+/// Test resumable `FileWriter` creation and offset writing.
 #[tokio::test]
 async fn test_file_writer_resumable() {
     use localdrop_core::file::FileWriter;
@@ -351,6 +351,7 @@ async fn test_file_writer_out_of_order_chunks() {
     ];
 
     for (index, chunk) in chunks {
+        #[allow(clippy::cast_sign_loss)]
         let offset = index as u64 * chunk_size as u64;
         writer
             .write_chunk_at(&chunk, offset)
@@ -404,6 +405,7 @@ fn create_test_resume_state(code: &str) -> ResumeState {
 }
 
 fn create_test_chunk(index: usize, size: usize) -> localdrop_core::file::FileChunk {
+    #[allow(clippy::cast_possible_truncation)]
     let data: Vec<u8> = (0..size).map(|i| ((i + index) % 256) as u8).collect();
     let checksum = localdrop_core::crypto::xxhash64(&data);
 

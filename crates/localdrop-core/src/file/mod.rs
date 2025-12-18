@@ -853,7 +853,10 @@ mod tests {
 
         // SHA-256 of empty data
         let expected_sha256 = crate::crypto::sha256(b"");
-        assert_eq!(sha256, expected_sha256, "SHA-256 of empty file should match");
+        assert_eq!(
+            sha256, expected_sha256,
+            "SHA-256 of empty file should match"
+        );
     }
 
     #[tokio::test]

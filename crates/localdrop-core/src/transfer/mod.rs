@@ -661,6 +661,16 @@ impl std::fmt::Debug for ReceiveSession {
     }
 }
 
+impl Drop for ReceiveSession {
+    fn drop(&mut self) {
+        // Abort the keep-alive task if still running to prevent channel errors
+        // This handles cases where the session is dropped without explicit cleanup
+        if let Some(handle) = self.keep_alive_handle.take() {
+            handle.task_handle.abort();
+        }
+    }
+}
+
 impl ReceiveSession {
     /// Connect to a sender using a share code.
     ///
@@ -680,6 +690,12 @@ impl ReceiveSession {
     ) -> Result<Self> {
         let listener = HybridListener::new(config.discovery_port).await?;
         let discovered = listener.find(code, config.discovery_timeout).await?;
+
+        // Explicitly shutdown listener to give mDNS daemon time to process events
+        // This prevents "sending on a closed channel" errors during Drop
+        if let Err(e) = listener.shutdown() {
+            tracing::debug!("Listener shutdown: {e}");
+        }
 
         tracing::info!(
             "Found share from {} at {} (via hybrid discovery)",

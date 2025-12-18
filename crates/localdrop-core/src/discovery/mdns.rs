@@ -247,6 +247,10 @@ impl MdnsBroadcaster {
     ///
     /// Returns an error if the shutdown fails.
     pub fn shutdown(mut self) -> Result<()> {
+        // Brief delay to let the daemon process any pending operations (e.g., unregister)
+        // This prevents "sending on a closed channel" errors from pending events
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         if let Some(daemon) = self.daemon.take() {
             daemon
                 .shutdown()
@@ -258,6 +262,9 @@ impl MdnsBroadcaster {
 
 impl Drop for MdnsBroadcaster {
     fn drop(&mut self) {
+        // Brief delay to let the daemon process any pending operations (e.g., unregister)
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         if let Some(daemon) = self.daemon.take() {
             if let Err(e) = daemon.shutdown() {
                 tracing::debug!("mDNS broadcaster shutdown during drop: {e}");
@@ -401,6 +408,10 @@ impl MdnsListener {
         // Stop browsing first to properly clean up
         self.stop_browsing();
 
+        // Brief delay to let the daemon process the stop_browse before shutdown
+        // This prevents "sending on a closed channel" errors from pending events
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         if let Some(daemon) = self.daemon.take() {
             daemon
                 .shutdown()
@@ -417,6 +428,9 @@ impl Drop for MdnsListener {
             if let Err(e) = daemon.stop_browse(SERVICE_TYPE) {
                 tracing::debug!("Failed to stop mDNS browse during drop: {e}");
             }
+
+            // Brief delay to let the daemon process the stop_browse before shutdown
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
         if let Some(daemon) = self.daemon.take() {
