@@ -75,6 +75,16 @@ pub enum MessageType {
     ResumeRequest = 0x40,
     /// Resume acknowledgment (sender confirms what to retransfer)
     ResumeAck = 0x41,
+    /// Clipboard content metadata
+    ClipboardMeta = 0x50,
+    /// Clipboard content data
+    ClipboardData = 0x51,
+    /// Clipboard acknowledgment
+    ClipboardAck = 0x52,
+    /// Clipboard content changed notification (for sync mode)
+    ClipboardChanged = 0x53,
+    /// Clipboard content request (for sync mode)
+    ClipboardRequest = 0x54,
     /// Error message
     Error = 0xFF,
 }
@@ -100,6 +110,11 @@ impl MessageType {
             0x31 => Some(Self::Pong),
             0x40 => Some(Self::ResumeRequest),
             0x41 => Some(Self::ResumeAck),
+            0x50 => Some(Self::ClipboardMeta),
+            0x51 => Some(Self::ClipboardData),
+            0x52 => Some(Self::ClipboardAck),
+            0x53 => Some(Self::ClipboardChanged),
+            0x54 => Some(Self::ClipboardRequest),
             0xFF => Some(Self::Error),
             _ => None,
         }
@@ -282,6 +297,52 @@ pub struct ResumeAckPayload {
     /// Reason if not accepted
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// Clipboard content type identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum ClipboardContentType {
+    /// Plain text content
+    PlainText = 0x01,
+    /// Image in PNG format
+    ImagePng = 0x10,
+}
+
+/// Clipboard metadata payload (JSON).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardMetaPayload {
+    /// Type of clipboard content
+    pub content_type: ClipboardContentType,
+    /// Size in bytes
+    pub size: u64,
+    /// xxHash64 checksum
+    pub checksum: u64,
+    /// Unix timestamp (milliseconds)
+    pub timestamp: i64,
+}
+
+/// Clipboard acknowledgment payload (JSON).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardAckPayload {
+    /// Whether the operation succeeded
+    pub success: bool,
+    /// Error message if failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Clipboard changed notification payload (JSON) - for sync mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardChangedPayload {
+    /// Type of clipboard content
+    pub content_type: ClipboardContentType,
+    /// Size in bytes
+    pub size: u64,
+    /// xxHash64 checksum
+    pub checksum: u64,
+    /// Unix timestamp (milliseconds)
+    pub timestamp: i64,
 }
 
 /// Encode a message payload to JSON bytes.

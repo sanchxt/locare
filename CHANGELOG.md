@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Clipboard sharing module** (localdrop-core)
+  - `ClipboardContent` type supporting text and PNG images
+  - `ClipboardMetadata` for content type, size, and checksum
+  - `NativeClipboard` wrapper using arboard for cross-platform access
+  - `ClipboardWatcher` for polling-based change detection (500ms interval)
+  - `ClipboardShareSession` for one-shot clipboard sharing
+  - `ClipboardReceiveSession` for one-shot clipboard receiving with keep-alive
+  - `ClipboardSyncSession` for live bidirectional clipboard synchronization
+  - New protocol message types: ClipboardMeta, ClipboardData, ClipboardAck, ClipboardChanged, ClipboardRequest
+  - xxHash64 content hashing for efficient change detection
+
+- **Clipboard CLI commands** (localdrop)
+  - `localdrop clipboard share` - Share current clipboard content with a code
+  - `localdrop clipboard receive <code>` - Receive clipboard content using a code
+  - `localdrop clipboard sync [code]` - Start or join bidirectional clipboard sync
+  - JSON output mode (`--json`) for scripting
+  - Quiet mode (`--quiet`) for minimal output
+  - Batch mode (`--batch`) for non-interactive receiving
+
 ## [0.1.0] - 2025-12-17
 
 ### Added

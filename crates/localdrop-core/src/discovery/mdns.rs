@@ -238,10 +238,9 @@ impl MdnsBroadcaster {
 
             // Wait for the unregister operation to complete
             // This prevents "sending on a closed channel" errors
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                async { receiver.recv_async().await },
-            )
+            match tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                receiver.recv_async().await
+            })
             .await
             {
                 Ok(Ok(status)) => {
@@ -301,7 +300,9 @@ impl Drop for MdnsBroadcaster {
                             tracing::debug!(?status, "mDNS broadcaster drop shutdown completed");
                         }
                         Err(_) => {
-                            tracing::debug!("mDNS broadcaster drop shutdown timed out or disconnected");
+                            tracing::debug!(
+                                "mDNS broadcaster drop shutdown timed out or disconnected"
+                            );
                         }
                     }
                 }
@@ -490,7 +491,9 @@ impl Drop for MdnsListener {
                             tracing::debug!(?status, "mDNS listener drop shutdown completed");
                         }
                         Err(_) => {
-                            tracing::debug!("mDNS listener drop shutdown timed out or disconnected");
+                            tracing::debug!(
+                                "mDNS listener drop shutdown timed out or disconnected"
+                            );
                         }
                     }
                 }

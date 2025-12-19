@@ -18,6 +18,7 @@ LocalDrop enables seamless peer-to-peer file transfers over local networks using
 -   **Private & secure**: TLS 1.3 encryption, data never leaves local network
 -   **Fast transfers**: Chunked transfers with xxHash64 verification
 -   **CLI interface**: Full-featured command-line tool
+-   **Clipboard sharing**: One-shot transfer and live bidirectional sync
 
 ## Quick Start
 
@@ -45,6 +46,22 @@ localdrop receive A7K9 --output ~/Downloads/
 
 # Batch mode (auto-accept)
 localdrop receive A7K9 --batch
+```
+
+### Clipboard Sharing
+
+```bash
+# Share current clipboard content (generates a code)
+localdrop clipboard share
+
+# Receive clipboard content using a code
+localdrop clipboard receive A7K9
+
+# Start bidirectional clipboard sync (host)
+localdrop clipboard sync
+
+# Join existing sync session
+localdrop clipboard sync A7K9
 ```
 
 ## Installation
@@ -97,7 +114,12 @@ winget install localdrop
 localdrop share <files...>          # Share files/folders
 localdrop receive <code>             # Receive with code
 
-# Advanced (Phase 2+)
+# Clipboard Sharing
+localdrop clipboard share            # Share clipboard content
+localdrop clipboard receive <code>   # Receive clipboard content
+localdrop clipboard sync [code]      # Bidirectional clipboard sync
+
+# Advanced
 localdrop scan                       # Scan for active shares
 localdrop send <device> <files>      # Send to trusted device
 localdrop trust list                 # Manage trusted devices

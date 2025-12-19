@@ -175,6 +175,18 @@ pub enum Error {
     /// Keep-alive failed (connection may be dead)
     #[error("keep-alive failed: no response after {0} seconds")]
     KeepAliveFailed(u64),
+
+    /// Clipboard access failed
+    #[error("clipboard error: {0}")]
+    ClipboardError(String),
+
+    /// Clipboard is empty
+    #[error("clipboard is empty")]
+    ClipboardEmpty,
+
+    /// Unsupported clipboard content type
+    #[error("unsupported clipboard content type: {0}")]
+    UnsupportedClipboardType(String),
 }
 
 impl Error {

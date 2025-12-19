@@ -90,6 +90,12 @@ tempfile = "3"
 # Hostname detection
 hostname = "0.4"
 
+# Clipboard access (cross-platform)
+arboard = "3"
+
+# Async stream utilities
+async-stream = "0.3"
+
 # FFI (for future mobile bindings)
 # uniffi = "0.28"
 

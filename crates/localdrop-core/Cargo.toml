@@ -48,6 +48,9 @@ directories = { workspace = true }
 # Image processing
 image = { workspace = true }
 
+# Clipboard access
+arboard = { workspace = true }
+
 # QR code
 qrcode = { workspace = true }
 

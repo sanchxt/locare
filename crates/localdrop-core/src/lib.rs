@@ -12,6 +12,7 @@
 //!
 //! ## Modules
 //!
+//! - [`clipboard`] - Clipboard sharing (one-shot and live sync)
 //! - [`code`] - Share code generation and validation
 //! - [`config`] - Configuration management
 //! - [`crypto`] - Cryptographic primitives (TLS, hashing, signatures)
@@ -51,6 +52,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::unused_self)]
 
+pub mod clipboard;
 pub mod code;
 pub mod config;
 pub mod crypto;
