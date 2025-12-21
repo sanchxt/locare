@@ -3,6 +3,8 @@
 //! This module provides a platform-agnostic interface for reading and writing
 //! clipboard content using the `arboard` crate.
 
+use std::time::Duration;
+
 use arboard::Clipboard;
 use image::ImageEncoder;
 
@@ -25,6 +27,20 @@ pub trait ClipboardAccess: Send + Sync {
     ///
     /// Returns an error if clipboard access fails.
     fn write(&mut self, content: &ClipboardContent) -> Result<()>;
+
+    /// Write content to clipboard and wait for a clipboard manager to claim it.
+    ///
+    /// On Linux (especially Wayland), clipboard content is "hosted" by the application.
+    /// When the `Clipboard` object is dropped, the content becomes inaccessible unless
+    /// another application (like a clipboard manager) has claimed it. This method
+    /// waits until the content is claimed or the timeout expires.
+    ///
+    /// On non-Linux platforms, this behaves the same as `write()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if clipboard access fails or timeout expires without a claim.
+    fn write_and_wait(&mut self, content: &ClipboardContent, timeout: Duration) -> Result<()>;
 
     /// Get hash of current content (for change detection).
     ///
@@ -51,6 +67,57 @@ impl NativeClipboard {
 }
 
 impl ClipboardAccess for NativeClipboard {
+    #[cfg(target_os = "linux")]
+    fn write_and_wait(&mut self, content: &ClipboardContent, timeout: Duration) -> Result<()> {
+        use arboard::SetExtLinux;
+        use std::time::Instant;
+
+        let deadline = Instant::now() + timeout;
+
+        match content {
+            ClipboardContent::Text(text) => {
+                self.clipboard
+                    .set()
+                    .wait_until(deadline)
+                    .text(text.clone())
+                    .map_err(|e| Error::ClipboardError(format!("failed to set text: {e}")))?;
+            }
+            ClipboardContent::Image {
+                data,
+                width: _,
+                height: _,
+            } => {
+                // Decode PNG to RGBA
+                let img = image::load_from_memory_with_format(data, image::ImageFormat::Png)
+                    .map_err(|e| Error::ClipboardError(format!("failed to decode PNG: {e}")))?;
+
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+
+                let image_data = arboard::ImageData {
+                    width: w as usize,
+                    height: h as usize,
+                    bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+                };
+
+                self.clipboard
+                    .set()
+                    .wait_until(deadline)
+                    .image(image_data)
+                    .map_err(|e| Error::ClipboardError(format!("failed to set image: {e}")))?;
+            }
+        }
+
+        tracing::debug!("Clipboard: content written and claimed by clipboard manager");
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn write_and_wait(&mut self, content: &ClipboardContent, _timeout: Duration) -> Result<()> {
+        // On non-Linux platforms, just use regular write
+        self.write(content)
+    }
+
     fn read(&mut self) -> Result<Option<ClipboardContent>> {
         // Try to read text first
         match self.clipboard.get_text() {

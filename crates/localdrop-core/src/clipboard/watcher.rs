@@ -97,15 +97,16 @@ impl ClipboardWatcher {
                         break;
                     }
                     () = tokio::time::sleep(poll_interval) => {
-                        // Check clipboard
-                        let current_hash = clipboard.content_hash();
-                        let stored_hash = last_hash.load(Ordering::SeqCst);
+                        // Read content FIRST, then compute hash from that content
+                        // This prevents race conditions where hash and content don't match
+                        if let Ok(Some(content)) = clipboard.read() {
+                            let current_hash = content.hash();
+                            let stored_hash = last_hash.load(Ordering::SeqCst);
 
-                        if current_hash != 0 && current_hash != stored_hash {
-                            // Content has changed
-                            last_hash.store(current_hash, Ordering::SeqCst);
+                            if current_hash != 0 && current_hash != stored_hash {
+                                // Content has changed - update hash AFTER we have the content
+                                last_hash.store(current_hash, Ordering::SeqCst);
 
-                            if let Ok(Some(content)) = clipboard.read() {
                                 let change = ClipboardChange {
                                     content,
                                     hash: current_hash,
@@ -177,6 +178,14 @@ mod tests {
         fn write(&mut self, content: &ClipboardContent) -> crate::Result<()> {
             *self.content.lock().unwrap() = Some(content.clone());
             Ok(())
+        }
+
+        fn write_and_wait(
+            &mut self,
+            content: &ClipboardContent,
+            _timeout: std::time::Duration,
+        ) -> crate::Result<()> {
+            self.write(content)
         }
 
         fn content_hash(&mut self) -> u64 {

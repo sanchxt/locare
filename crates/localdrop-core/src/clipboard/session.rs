@@ -574,7 +574,33 @@ impl ClipboardReceiveSession {
     pub async fn accept_to_clipboard(&mut self) -> Result<()> {
         let content = self.accept().await?;
         let mut clipboard = create_clipboard()?;
-        clipboard.write(&content)?;
+
+        // Use write_and_wait to ensure clipboard manager claims the content
+        // before this function returns. This is critical on Wayland where
+        // clipboard content is "hosted" by the application.
+        clipboard.write_and_wait(&content, Duration::from_secs(5))?;
+
+        // Verify the write succeeded by reading back
+        let verification = clipboard.read()?;
+        if let Some(read_content) = verification {
+            if read_content.hash() != content.hash() {
+                tracing::warn!(
+                    "Clipboard verification failed: hash mismatch (expected {}, got {})",
+                    content.hash(),
+                    read_content.hash()
+                );
+                return Err(Error::ClipboardError(
+                    "verification failed: content mismatch".to_string(),
+                ));
+            }
+            tracing::debug!("Clipboard content verified successfully");
+        } else {
+            tracing::warn!("Clipboard verification failed: clipboard is empty after write");
+            return Err(Error::ClipboardError(
+                "verification failed: clipboard empty".to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -1207,16 +1233,24 @@ impl SyncSessionRunner {
 
                             // Apply content if successfully received
                             if let Some(content) = content {
-                                // Write to local clipboard FIRST
-                                if clipboard.write(&content).is_ok() {
-                                    // Only update hash AFTER successful write
-                                    last_remote.store(changed.checksum, Ordering::SeqCst);
-                                    let _ = event_tx
-                                        .send(SyncEvent::Received {
-                                            content_type: changed.content_type,
-                                            size: changed.size,
-                                        })
-                                        .await;
+                                // Write to local clipboard using write_and_wait
+                                // This ensures the content persists on Wayland
+                                match clipboard
+                                    .write_and_wait(&content, Duration::from_secs(2))
+                                {
+                                    Ok(()) => {
+                                        // Only update hash AFTER successful write
+                                        last_remote.store(changed.checksum, Ordering::SeqCst);
+                                        let _ = event_tx
+                                            .send(SyncEvent::Received {
+                                                content_type: changed.content_type,
+                                                size: changed.size,
+                                            })
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Failed to write clipboard in sync: {}", e);
+                                    }
                                 }
                             }
 
@@ -1235,11 +1269,10 @@ impl SyncSessionRunner {
                         }
                         MessageType::ClipboardRequest => {
                             // Peer is requesting our current content
-                            // First try to get from cache (most recent detected change),
-                            // then fallback to reading clipboard directly
+                            // Use clone() instead of take() to preserve cache for potential retries
                             let cached_content = {
-                                let mut cache_guard = cache.lock().await;
-                                cache_guard.take().map(|(_, c)| c.content)
+                                let cache_guard = cache.lock().await;
+                                cache_guard.as_ref().map(|(_, c)| c.content.clone())
                             };
                             let content = cached_content.or_else(|| clipboard.read().ok().flatten());
 
@@ -1261,6 +1294,20 @@ impl SyncSessionRunner {
                                     &mut *stream.lock().await,
                                     MessageType::ClipboardData,
                                     &response,
+                                )
+                                .await?;
+                            } else {
+                                // ALWAYS respond - send error ack instead of leaving peer hanging
+                                tracing::warn!("ClipboardRequest but no content available");
+                                let ack = ClipboardAckPayload {
+                                    success: false,
+                                    error: Some("No clipboard content available".to_string()),
+                                };
+                                let ack_payload = protocol::encode_payload(&ack)?;
+                                protocol::write_frame(
+                                    &mut *stream.lock().await,
+                                    MessageType::ClipboardAck,
+                                    &ack_payload,
                                 )
                                 .await?;
                             }
