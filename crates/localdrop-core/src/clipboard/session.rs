@@ -581,9 +581,10 @@ impl ClipboardReceiveSession {
         // clipboard content is "hosted" by the application.
         clipboard.write_and_wait(&content, Duration::from_secs(5))?;
 
-        // Small delay to allow clipboard manager to process on Linux
+        // Wait for the spawned clipboard holder to initialize and set content
+        // The holder process needs time to: read stdin, decode image, and set clipboard
         #[cfg(target_os = "linux")]
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
 
         // Verify the write succeeded by reading back with content type hint
         // This ensures we read image first when we wrote an image

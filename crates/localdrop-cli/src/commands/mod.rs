@@ -7,6 +7,7 @@ pub mod clipboard;
 pub mod config;
 pub mod diagnose;
 pub mod history;
+pub mod internal;
 pub mod receive;
 pub mod scan;
 pub mod send;
@@ -57,6 +58,10 @@ pub enum Command {
 
     /// View transfer history
     History(HistoryArgs),
+
+    /// Internal: hold clipboard content (not user-facing, used by spawn)
+    #[command(hide = true)]
+    InternalClipboardHold(InternalClipboardHoldArgs),
 }
 
 /// Arguments for the share command
@@ -330,4 +335,16 @@ pub struct ClipboardReceiveArgs {
 pub struct ClipboardSyncArgs {
     /// Share code to connect to (omit to host new session)
     pub code: Option<String>,
+}
+
+/// Arguments for internal clipboard hold command (not user-facing)
+#[derive(Parser)]
+pub struct InternalClipboardHoldArgs {
+    /// Content type: "image" or "text"
+    #[arg(long)]
+    pub content_type: String,
+
+    /// Timeout in seconds before the holder exits
+    #[arg(long, default_value = "300")]
+    pub timeout: u64,
 }

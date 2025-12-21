@@ -4,14 +4,14 @@
 //! application that sets it. When that application exits, the clipboard content
 //! becomes unavailable unless a clipboard manager has claimed it.
 //!
-//! This module provides a mechanism to fork a background process that holds
-//! the clipboard content until it's pasted or a timeout expires. This is the
-//! same approach used by `wl-copy` internally.
+//! This module spawns a separate process that holds the clipboard content until
+//! it's pasted or a timeout expires. Unlike fork(), this approach:
+//! - Maintains Wayland session connection (no setsid())
+//! - Creates a clean process without async runtime corruption
+//! - Provides visible error logging
 
-// Allow unsafe for fork() - this is the only way to create a background process
-// that can hold clipboard content independently of the main process.
-#![allow(unsafe_code)]
-
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -21,7 +21,7 @@ pub const DEFAULT_HOLDER_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Hold image content in a background process for clipboard persistence.
 ///
-/// This function forks a detached child process that:
+/// This function spawns a detached child process that:
 /// 1. Creates a new clipboard instance
 /// 2. Sets the image content
 /// 3. Waits for the clipboard manager to claim it or timeout expires
@@ -39,118 +39,73 @@ pub const DEFAULT_HOLDER_TIMEOUT: Duration = Duration::from_secs(300);
 /// # Errors
 ///
 /// Returns an error if:
-/// - Fork fails
-/// - Child process fails to set clipboard
-///
-/// # Safety
-///
-/// This function uses `fork()` which is inherently unsafe in multi-threaded
-/// programs. It should be called from the main thread before spawning threads,
-/// or with care in async contexts.
+/// - Cannot find the current executable
+/// - Process spawn fails
+/// - Writing data to child fails
 pub fn hold_image_in_background(
     png_data: Vec<u8>,
     width: u32,
     height: u32,
     timeout: Duration,
 ) -> Result<()> {
-    use nix::unistd::{fork, setsid, ForkResult};
-
-    // SAFETY: We're forking here. The child process will be short-lived and
-    // only interact with the clipboard. We use setsid() to detach from the
-    // parent's session.
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { child }) => {
-            tracing::debug!(
-                "Clipboard holder: forked child process {} for image {}x{}",
-                child,
-                width,
-                height
-            );
-
-            // Wait briefly for child to initialize and set clipboard
-            // This ensures the clipboard is set before we return
-            std::thread::sleep(Duration::from_millis(500));
-
-            Ok(())
-        }
-
-        Ok(ForkResult::Child) => {
-            // Detach from parent's session to become a daemon
-            if let Err(e) = setsid() {
-                tracing::error!("Clipboard holder: setsid failed: {}", e);
-                std::process::exit(1);
-            }
-
-            // Run the holder logic
-            match run_holder(png_data, width, height, timeout) {
-                Ok(()) => {
-                    tracing::debug!("Clipboard holder: exiting normally");
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    tracing::error!("Clipboard holder: failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-
-        Err(e) => Err(Error::ClipboardError(format!(
-            "fork failed for clipboard holder: {}",
-            e
-        ))),
-    }
-}
-
-/// Internal function that runs in the child process to hold clipboard content.
-fn run_holder(png_data: Vec<u8>, width: u32, height: u32, timeout: Duration) -> Result<()> {
-    use arboard::Clipboard;
-
-    // Decode PNG to RGBA for arboard
-    let img = image::load_from_memory_with_format(&png_data, image::ImageFormat::Png)
-        .map_err(|e| Error::ClipboardError(format!("failed to decode PNG in holder: {}", e)))?;
-
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-
-    tracing::debug!(
-        "Clipboard holder: setting image {}x{} (decoded {}x{})",
+    let display_server = DisplayServer::detect();
+    tracing::info!(
+        "Spawning clipboard holder for image {}x{} ({} bytes) on {:?}",
         width,
         height,
-        w,
-        h
+        png_data.len(),
+        display_server
     );
 
-    // Create a fresh clipboard instance in the child process
-    let mut clipboard = Clipboard::new()
-        .map_err(|e| Error::ClipboardError(format!("holder failed to access clipboard: {}", e)))?;
+    // Get the current executable path
+    let exe = std::env::current_exe().map_err(|e| {
+        Error::ClipboardError(format!("cannot find current executable for holder: {}", e))
+    })?;
 
-    // Prepare image data for arboard
-    let image_data = arboard::ImageData {
-        width: w as usize,
-        height: h as usize,
-        bytes: std::borrow::Cow::Owned(rgba.into_raw()),
-    };
+    tracing::debug!("Clipboard holder executable: {:?}", exe);
 
-    // Set the image to clipboard
-    clipboard
-        .set_image(image_data)
-        .map_err(|e| Error::ClipboardError(format!("holder failed to set image: {}", e)))?;
+    // Spawn a new process with the internal command
+    let mut child = Command::new(&exe)
+        .arg("internal-clipboard-hold")
+        .arg("--content-type")
+        .arg("image")
+        .arg("--timeout")
+        .arg(timeout.as_secs().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit()) // Keep stderr for debugging
+        .spawn()
+        .map_err(|e| Error::ClipboardError(format!("failed to spawn clipboard holder: {}", e)))?;
 
     tracing::debug!(
-        "Clipboard holder: image set, waiting up to {:?} for clipboard manager",
-        timeout
+        "Clipboard holder process spawned with PID {:?}",
+        child.id()
     );
 
-    // Wait for the clipboard manager to claim the content or timeout
-    // On Wayland, the clipboard manager will eventually claim the content
-    // and we can exit. If no manager claims it, we wait until timeout.
-    //
-    // We could use arboard's wait_until() here, but that has proven unreliable
-    // for images. Instead, we just sleep and let the clipboard manager pick
-    // up the content at its leisure.
-    std::thread::sleep(timeout);
+    // Write PNG data to child's stdin
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&png_data).map_err(|e| {
+            Error::ClipboardError(format!("failed to write image data to holder: {}", e))
+        })?;
+        // stdin is dropped here, signaling EOF to the child
+    } else {
+        return Err(Error::ClipboardError(
+            "failed to get stdin pipe for clipboard holder".to_string(),
+        ));
+    }
 
-    tracing::debug!("Clipboard holder: timeout reached, exiting");
+    // Wait for child to initialize and set clipboard
+    // This gives the holder process time to read stdin and set the clipboard
+    std::thread::sleep(Duration::from_millis(500));
+
+    tracing::debug!(
+        "Clipboard holder process started for image {}x{}",
+        width,
+        height
+    );
+
+    // Child continues running in background - we don't wait for it
+    // The child will exit after timeout or when clipboard is claimed
     Ok(())
 }
 
@@ -167,58 +122,50 @@ fn run_holder(png_data: Vec<u8>, width: u32, height: u32, timeout: Duration) -> 
 ///
 /// # Errors
 ///
-/// Returns an error if fork fails or child process fails to set clipboard.
+/// Returns an error if process spawn fails or writing data fails.
 pub fn hold_text_in_background(text: String, timeout: Duration) -> Result<()> {
-    use nix::unistd::{fork, setsid, ForkResult};
+    let display_server = DisplayServer::detect();
+    tracing::info!(
+        "Spawning clipboard holder for text ({} bytes) on {:?}",
+        text.len(),
+        display_server
+    );
 
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { child }) => {
-            tracing::debug!(
-                "Clipboard holder: forked child process {} for text ({} bytes)",
-                child,
-                text.len()
-            );
+    let exe = std::env::current_exe().map_err(|e| {
+        Error::ClipboardError(format!("cannot find current executable for holder: {}", e))
+    })?;
 
-            std::thread::sleep(Duration::from_millis(200));
-            Ok(())
-        }
+    let mut child = Command::new(&exe)
+        .arg("internal-clipboard-hold")
+        .arg("--content-type")
+        .arg("text")
+        .arg("--timeout")
+        .arg(timeout.as_secs().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| Error::ClipboardError(format!("failed to spawn clipboard holder: {}", e)))?;
 
-        Ok(ForkResult::Child) => {
-            if let Err(e) = setsid() {
-                tracing::error!("Clipboard holder: setsid failed: {}", e);
-                std::process::exit(1);
-            }
+    tracing::debug!(
+        "Clipboard holder process spawned with PID {:?}",
+        child.id()
+    );
 
-            match run_text_holder(text, timeout) {
-                Ok(()) => std::process::exit(0),
-                Err(e) => {
-                    tracing::error!("Clipboard holder: failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-
-        Err(e) => Err(Error::ClipboardError(format!(
-            "fork failed for clipboard holder: {}",
-            e
-        ))),
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes()).map_err(|e| {
+            Error::ClipboardError(format!("failed to write text data to holder: {}", e))
+        })?;
+    } else {
+        return Err(Error::ClipboardError(
+            "failed to get stdin pipe for clipboard holder".to_string(),
+        ));
     }
-}
 
-/// Internal function that runs in the child process to hold text content.
-fn run_text_holder(text: String, timeout: Duration) -> Result<()> {
-    use arboard::Clipboard;
+    // Wait briefly for child to initialize
+    std::thread::sleep(Duration::from_millis(300));
 
-    let mut clipboard = Clipboard::new()
-        .map_err(|e| Error::ClipboardError(format!("holder failed to access clipboard: {}", e)))?;
-
-    clipboard
-        .set_text(text)
-        .map_err(|e| Error::ClipboardError(format!("holder failed to set text: {}", e)))?;
-
-    tracing::debug!("Clipboard holder: text set, waiting for clipboard manager");
-    std::thread::sleep(timeout);
-
+    tracing::debug!("Clipboard holder process started for text");
     Ok(())
 }
 

@@ -40,6 +40,10 @@ serde_json = { workspace = true }
 # UUID
 uuid = { workspace = true }
 
+# Clipboard (for internal holder command)
+arboard = { workspace = true }
+image = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

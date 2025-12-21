@@ -1181,8 +1181,10 @@ name = "localdrop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "clap",
  "crossterm",
+ "image",
  "localdrop-core",
  "ratatui",
  "serde_json",
