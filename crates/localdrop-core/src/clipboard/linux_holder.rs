@@ -23,9 +23,17 @@ pub const DEFAULT_HOLDER_TIMEOUT: Duration = Duration::from_secs(300);
 ///
 /// This function spawns a detached child process that:
 /// 1. Creates a new clipboard instance
-/// 2. Sets the image content
-/// 3. Waits for the clipboard manager to claim it or timeout expires
-/// 4. Exits cleanly
+/// 2. Sets the image content with `arboard::SetExtLinux::wait()`
+/// 3. Blocks until the clipboard is overwritten by another application
+/// 4. Exits when clipboard changes or when the safety timeout expires
+///
+/// The holder uses `wait()` instead of `wait_until()` because clipboard managers
+/// (like Klipper, GPaste, cliphist) claim content immediately but don't always
+/// persist images properly. `wait()` keeps the holder alive to serve paste requests
+/// until the user actually copies something new.
+///
+/// A watchdog thread ensures the holder doesn't run forever - it exits after
+/// the timeout regardless of clipboard state.
 ///
 /// The parent process waits briefly for the child to initialize, then returns.
 ///
@@ -34,7 +42,7 @@ pub const DEFAULT_HOLDER_TIMEOUT: Duration = Duration::from_secs(300);
 /// * `png_data` - PNG-encoded image data
 /// * `width` - Image width in pixels
 /// * `height` - Image height in pixels
-/// * `timeout` - How long the holder process should wait before exiting
+/// * `timeout` - Maximum lifetime of the holder process (safety timeout)
 ///
 /// # Errors
 ///

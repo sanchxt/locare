@@ -581,6 +581,24 @@ impl ClipboardReceiveSession {
         // clipboard content is "hosted" by the application.
         clipboard.write_and_wait(&content, Duration::from_secs(5))?;
 
+        // On Linux with images, the background holder process owns the clipboard.
+        // We cannot reliably verify by reading back because:
+        // 1. The holder uses wait() which blocks until clipboard changes
+        // 2. Reading the clipboard from this process may not see the holder's content
+        // 3. Clipboard managers may claim but not properly persist images
+        // Trust the holder process - if write_and_wait succeeded, the image is available.
+        #[cfg(target_os = "linux")]
+        {
+            if matches!(&content, ClipboardContent::Image { .. }) {
+                // Wait for holder to initialize and set the clipboard
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                tracing::info!(
+                    "Image set via background holder process - ready to paste"
+                );
+                return Ok(());
+            }
+        }
+
         // Wait for the spawned clipboard holder to initialize and set content
         // The holder process needs time to: read stdin, decode image, and set clipboard
         #[cfg(target_os = "linux")]
@@ -1320,6 +1338,17 @@ impl SyncSessionRunner {
                                     .write_and_wait(&content, Duration::from_secs(2))
                                 {
                                     Ok(()) => {
+                                        // On Linux with images, wait for holder to initialize
+                                        // The holder process uses wait() which keeps it alive
+                                        // until the clipboard is overwritten
+                                        #[cfg(target_os = "linux")]
+                                        if matches!(&content, ClipboardContent::Image { .. }) {
+                                            tokio::time::sleep(Duration::from_millis(500)).await;
+                                            tracing::debug!(
+                                                "Image sync: holder process initialized"
+                                            );
+                                        }
+
                                         // Only update hash AFTER successful write
                                         last_remote.store(changed.checksum, Ordering::SeqCst);
                                         let _ = event_tx

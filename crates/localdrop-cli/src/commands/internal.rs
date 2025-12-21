@@ -4,6 +4,8 @@
 //! to spawn a subprocess that holds clipboard content on Linux (Wayland/X11).
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
@@ -51,6 +53,21 @@ pub fn run_clipboard_hold(content_type: &str, timeout_secs: u64) -> Result<()> {
 
         match content_type {
             "image" => {
+                // Start a watchdog thread that will exit the process after the timeout.
+                // This is needed because wait() blocks indefinitely until clipboard changes,
+                // and we don't want orphaned holder processes.
+                let watchdog_timeout = timeout_secs;
+                let watchdog_active = Arc::new(AtomicBool::new(true));
+                let watchdog_flag = Arc::clone(&watchdog_active);
+
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(watchdog_timeout));
+                    if watchdog_flag.load(Ordering::SeqCst) {
+                        eprintln!("Clipboard holder: safety timeout reached after {} seconds, exiting", watchdog_timeout);
+                        std::process::exit(0);
+                    }
+                });
+
                 // Decode PNG to RGBA
                 let img = image::load_from_memory(&data)
                     .map_err(|e| anyhow::anyhow!("Failed to decode image: {}", e))?;
@@ -69,15 +86,22 @@ pub fn run_clipboard_hold(content_type: &str, timeout_secs: u64) -> Result<()> {
                     bytes: std::borrow::Cow::Owned(rgba.into_raw()),
                 };
 
-                // Use wait_until() which properly processes Wayland clipboard events
-                // This keeps the clipboard data available while responding to paste requests
+                // Use wait() instead of wait_until() for images.
+                // wait_until() returns immediately when a clipboard manager claims content,
+                // but the manager often doesn't properly persist images.
+                // wait() blocks until the clipboard is actually overwritten by another app,
+                // keeping the holder alive to serve paste requests.
+                // The watchdog thread ensures we don't block forever.
+                eprintln!("Clipboard holder: waiting for clipboard to be claimed (up to {} seconds)", watchdog_timeout);
                 clipboard
                     .set()
-                    .wait_until(deadline)
+                    .wait()
                     .image(image_data)
                     .map_err(|e| anyhow::anyhow!("Failed to set image in holder: {}", e))?;
 
-                eprintln!("Clipboard holder: image set and wait completed");
+                // Disable watchdog since wait() returned normally (clipboard was overwritten)
+                watchdog_active.store(false, Ordering::SeqCst);
+                eprintln!("Clipboard holder: clipboard was overwritten by another application");
             }
             "text" => {
                 let text = String::from_utf8(data)
