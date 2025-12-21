@@ -65,15 +65,29 @@ pub fn hold_image_in_background(
     tracing::debug!("Clipboard holder executable: {:?}", exe);
 
     // Spawn a new process with the internal command
-    let mut child = Command::new(&exe)
-        .arg("internal-clipboard-hold")
+    // Explicitly pass display environment variables to ensure clipboard access
+    let mut cmd = Command::new(&exe);
+    cmd.arg("internal-clipboard-hold")
         .arg("--content-type")
         .arg("image")
         .arg("--timeout")
         .arg(timeout.as_secs().to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit()) // Keep stderr for debugging
+        .stderr(Stdio::inherit()); // Keep stderr for debugging
+
+    // Ensure Wayland/X11 display variables are passed to child
+    if let Ok(val) = std::env::var("WAYLAND_DISPLAY") {
+        cmd.env("WAYLAND_DISPLAY", val);
+    }
+    if let Ok(val) = std::env::var("DISPLAY") {
+        cmd.env("DISPLAY", val);
+    }
+    if let Ok(val) = std::env::var("XDG_RUNTIME_DIR") {
+        cmd.env("XDG_RUNTIME_DIR", val);
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| Error::ClipboardError(format!("failed to spawn clipboard holder: {}", e)))?;
 
@@ -135,15 +149,28 @@ pub fn hold_text_in_background(text: String, timeout: Duration) -> Result<()> {
         Error::ClipboardError(format!("cannot find current executable for holder: {}", e))
     })?;
 
-    let mut child = Command::new(&exe)
-        .arg("internal-clipboard-hold")
+    let mut cmd = Command::new(&exe);
+    cmd.arg("internal-clipboard-hold")
         .arg("--content-type")
         .arg("text")
         .arg("--timeout")
         .arg(timeout.as_secs().to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    // Ensure Wayland/X11 display variables are passed to child
+    if let Ok(val) = std::env::var("WAYLAND_DISPLAY") {
+        cmd.env("WAYLAND_DISPLAY", val);
+    }
+    if let Ok(val) = std::env::var("DISPLAY") {
+        cmd.env("DISPLAY", val);
+    }
+    if let Ok(val) = std::env::var("XDG_RUNTIME_DIR") {
+        cmd.env("XDG_RUNTIME_DIR", val);
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| Error::ClipboardError(format!("failed to spawn clipboard holder: {}", e)))?;
 

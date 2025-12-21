@@ -107,7 +107,9 @@ impl ClipboardAccess for NativeClipboard {
             ClipboardContent::Image { data, width, height } => {
                 // Images need special handling on Linux, especially Wayland.
                 // arboard's wait_until() doesn't reliably persist images.
-                // Instead, we fork a background process to hold the clipboard.
+                // Instead, we spawn a background process to hold the clipboard.
+                use super::linux_holder::DEFAULT_HOLDER_TIMEOUT;
+
                 let display_server = DisplayServer::detect();
                 tracing::debug!(
                     "Clipboard: writing image {}x{} on {:?}",
@@ -116,9 +118,11 @@ impl ClipboardAccess for NativeClipboard {
                     display_server
                 );
 
-                // Use the background holder approach for image persistence
-                // This forks a child process that holds the clipboard content
-                hold_image_in_background(data.clone(), *width, *height, timeout)?;
+                // Use the background holder approach for image persistence.
+                // The holder runs for DEFAULT_HOLDER_TIMEOUT (5 minutes) to give
+                // the user time to paste the content. The `timeout` parameter here
+                // is for verification, not the holder lifetime.
+                hold_image_in_background(data.clone(), *width, *height, DEFAULT_HOLDER_TIMEOUT)?;
 
                 tracing::debug!("Clipboard: image written via background holder");
             }
