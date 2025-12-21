@@ -4,7 +4,7 @@
 //! to spawn a subprocess that holds clipboard content on Linux (Wayland/X11).
 
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use arboard::Clipboard;
@@ -37,68 +37,132 @@ pub fn run_clipboard_hold(content_type: &str, timeout_secs: u64) -> Result<()> {
         content_type
     );
 
-    // Create a fresh clipboard instance
-    let mut clipboard = Clipboard::new().map_err(|e| {
-        anyhow::anyhow!("Failed to access clipboard in holder process: {}", e)
-    })?;
+    // Calculate deadline for waiting
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
 
-    match content_type {
-        "image" => {
-            // Decode PNG to RGBA
-            let img = image::load_from_memory(&data)
-                .map_err(|e| anyhow::anyhow!("Failed to decode image: {}", e))?;
+    // On Linux, we need to use the SetExtLinux trait for proper Wayland support
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::SetExtLinux;
 
-            let rgba = img.to_rgba8();
-            let (width, height) = rgba.dimensions();
+        let mut clipboard = Clipboard::new().map_err(|e| {
+            anyhow::anyhow!("Failed to access clipboard in holder process: {}", e)
+        })?;
 
-            eprintln!(
-                "Clipboard holder: setting image {}x{} to clipboard",
-                width, height
-            );
+        match content_type {
+            "image" => {
+                // Decode PNG to RGBA
+                let img = image::load_from_memory(&data)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode image: {}", e))?;
 
-            let image_data = arboard::ImageData {
-                width: width as usize,
-                height: height as usize,
-                bytes: std::borrow::Cow::Owned(rgba.into_raw()),
-            };
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
 
-            clipboard.set_image(image_data).map_err(|e| {
-                anyhow::anyhow!("Failed to set image in holder: {}", e)
-            })?;
+                eprintln!(
+                    "Clipboard holder: setting image {}x{} to clipboard",
+                    width, height
+                );
 
-            eprintln!("Clipboard holder: image set successfully");
-        }
-        "text" => {
-            let text = String::from_utf8(data)
-                .map_err(|e| anyhow::anyhow!("Invalid UTF-8 text: {}", e))?;
+                let image_data = arboard::ImageData {
+                    width: width as usize,
+                    height: height as usize,
+                    bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+                };
 
-            eprintln!(
-                "Clipboard holder: setting {} bytes of text to clipboard",
-                text.len()
-            );
+                // Use wait_until() which properly processes Wayland clipboard events
+                // This keeps the clipboard data available while responding to paste requests
+                clipboard
+                    .set()
+                    .wait_until(deadline)
+                    .image(image_data)
+                    .map_err(|e| anyhow::anyhow!("Failed to set image in holder: {}", e))?;
 
-            clipboard.set_text(text).map_err(|e| {
-                anyhow::anyhow!("Failed to set text in holder: {}", e)
-            })?;
+                eprintln!("Clipboard holder: image set and wait completed");
+            }
+            "text" => {
+                let text = String::from_utf8(data)
+                    .map_err(|e| anyhow::anyhow!("Invalid UTF-8 text: {}", e))?;
 
-            eprintln!("Clipboard holder: text set successfully");
-        }
-        other => {
-            bail!("Unknown content type: {}", other);
+                eprintln!(
+                    "Clipboard holder: setting {} bytes of text to clipboard",
+                    text.len()
+                );
+
+                // Use wait_until() for text as well
+                clipboard
+                    .set()
+                    .wait_until(deadline)
+                    .text(text)
+                    .map_err(|e| anyhow::anyhow!("Failed to set text in holder: {}", e))?;
+
+                eprintln!("Clipboard holder: text set and wait completed");
+            }
+            other => {
+                bail!("Unknown content type: {}", other);
+            }
         }
     }
 
-    // Hold the clipboard for the specified duration
-    // On Wayland, the clipboard content is only available while this process runs.
-    // A clipboard manager will eventually claim the content, allowing us to exit.
-    // If no manager claims it, we wait until the timeout.
-    eprintln!(
-        "Clipboard holder: holding clipboard for up to {} seconds",
-        timeout_secs
-    );
+    // Non-Linux platforms use simpler approach
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut clipboard = Clipboard::new().map_err(|e| {
+            anyhow::anyhow!("Failed to access clipboard in holder process: {}", e)
+        })?;
 
-    std::thread::sleep(Duration::from_secs(timeout_secs));
+        match content_type {
+            "image" => {
+                let img = image::load_from_memory(&data)
+                    .map_err(|e| anyhow::anyhow!("Failed to decode image: {}", e))?;
 
-    eprintln!("Clipboard holder: timeout reached, exiting");
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
+
+                eprintln!(
+                    "Clipboard holder: setting image {}x{} to clipboard",
+                    width, height
+                );
+
+                let image_data = arboard::ImageData {
+                    width: width as usize,
+                    height: height as usize,
+                    bytes: std::borrow::Cow::Owned(rgba.into_raw()),
+                };
+
+                clipboard.set_image(image_data).map_err(|e| {
+                    anyhow::anyhow!("Failed to set image in holder: {}", e)
+                })?;
+
+                eprintln!("Clipboard holder: image set successfully");
+            }
+            "text" => {
+                let text = String::from_utf8(data)
+                    .map_err(|e| anyhow::anyhow!("Invalid UTF-8 text: {}", e))?;
+
+                eprintln!(
+                    "Clipboard holder: setting {} bytes of text to clipboard",
+                    text.len()
+                );
+
+                clipboard.set_text(text).map_err(|e| {
+                    anyhow::anyhow!("Failed to set text in holder: {}", e)
+                })?;
+
+                eprintln!("Clipboard holder: text set successfully");
+            }
+            other => {
+                bail!("Unknown content type: {}", other);
+            }
+        }
+
+        // On non-Linux, just sleep to hold the clipboard
+        eprintln!(
+            "Clipboard holder: holding clipboard for up to {} seconds",
+            timeout_secs
+        );
+        std::thread::sleep(Duration::from_secs(timeout_secs));
+    }
+
+    eprintln!("Clipboard holder: exiting");
     Ok(())
 }
