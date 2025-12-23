@@ -1121,7 +1121,6 @@ impl SyncSessionRunner {
 
         let started_at = Instant::now();
 
-        // Shared atomic counters for stats - accessible from spawned tasks
         let items_sent = Arc::new(AtomicU64::new(0));
         let bytes_sent = Arc::new(AtomicU64::new(0));
         let items_received = Arc::new(AtomicU64::new(0));
@@ -1136,13 +1135,10 @@ impl SyncSessionRunner {
 
         let (change_rx, watcher_handle) = watcher.start(clipboard);
 
-        // Small delay to ensure watcher's first poll uses the correct initial hash
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let content_cache: ContentCache = Arc::new(tokio::sync::Mutex::new(None));
 
-        // Split TLS stream into separate read/write halves to avoid mutex contention
-        // This allows the inbound task to read while the outbound task writes
         let (read_half, write_half) = tokio::io::split(self.tls_stream);
         let reader: Arc<tokio::sync::Mutex<ReadHalf<TlsStreamKind>>> =
             Arc::new(tokio::sync::Mutex::new(read_half));
@@ -1210,7 +1206,6 @@ impl SyncSessionRunner {
                     )
                     .await?;
 
-                    // Update stats
                     items_sent_clone.fetch_add(1, Ordering::SeqCst);
                     bytes_sent_clone.fetch_add(change.content.size(), Ordering::SeqCst);
 
@@ -1318,10 +1313,8 @@ impl SyncSessionRunner {
                                     content_size
                                 );
 
-                                // Update watcher hash BEFORE writing to prevent detecting our own write
                                 watcher_hash.store(hash, Ordering::SeqCst);
 
-                                // Update last_remote BEFORE writing to prevent outbound filter race
                                 last_remote.store(hash, Ordering::SeqCst);
 
                                 match clipboard.write_and_wait(&content, Duration::from_secs(2)) {
@@ -1334,13 +1327,12 @@ impl SyncSessionRunner {
                                             );
                                         }
 
-                                        // Cross-platform timing safety: small delay for clipboard propagation
                                         #[cfg(not(target_os = "linux"))]
                                         tokio::time::sleep(Duration::from_millis(100)).await;
 
-                                        // Update stats
                                         items_received_clone.fetch_add(1, Ordering::SeqCst);
-                                        bytes_received_clone.fetch_add(content_size, Ordering::SeqCst);
+                                        bytes_received_clone
+                                            .fetch_add(content_size, Ordering::SeqCst);
 
                                         let _ = event_tx
                                             .send(SyncEvent::Received {
@@ -1360,7 +1352,9 @@ impl SyncSessionRunner {
                                     }
                                 }
                             } else {
-                                tracing::warn!("Inbound: received empty content for clipboard change");
+                                tracing::warn!(
+                                    "Inbound: received empty content for clipboard change"
+                                );
                             }
 
                             let ack = ClipboardAckPayload {
@@ -1437,8 +1431,6 @@ impl SyncSessionRunner {
             })
         };
 
-        // Wait for shutdown or task completion
-        // We use biased selection to prioritize shutdown signal
         tokio::select! {
             biased;
             _ = shutdown_rx.recv() => {
@@ -1462,7 +1454,6 @@ impl SyncSessionRunner {
 
         watcher_handle.stop().await;
 
-        // Build final stats from atomic counters
         let stats = SyncStats {
             duration: started_at.elapsed(),
             items_sent: items_sent.load(Ordering::SeqCst),

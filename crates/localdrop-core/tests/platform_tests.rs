@@ -12,10 +12,6 @@ use localdrop_core::file::{
     apply_permissions, create_symlink, enumerate_files, EnumerateOptions, FileMetadata, SymlinkMode,
 };
 
-// ============================================================================
-// Unix-Specific Tests
-// ============================================================================
-
 #[cfg(unix)]
 mod unix_tests {
     use super::*;
@@ -140,10 +136,6 @@ mod unix_tests {
     }
 }
 
-// ============================================================================
-// Windows-Specific Tests
-// ============================================================================
-
 #[cfg(windows)]
 mod windows_tests {
     use super::*;
@@ -183,10 +175,6 @@ mod windows_tests {
         }
     }
 }
-
-// ============================================================================
-// Cross-Platform Tests
-// ============================================================================
 
 /// Test that follow symlinks mode works on all platforms.
 #[test]

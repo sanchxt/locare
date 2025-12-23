@@ -25,10 +25,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 
-// ============================================================================
-// Platform-Aware Permission Handling
-// ============================================================================
-
 /// Get Unix file permissions from metadata.
 ///
 /// Returns the mode bits on Unix systems, or None on other platforms.
@@ -78,10 +74,6 @@ pub fn apply_permissions(path: &Path, permissions: Option<u32>) -> Result<()> {
 pub fn apply_permissions(_path: &Path, _permissions: Option<u32>) -> Result<()> {
     Ok(())
 }
-
-// ============================================================================
-// Symlink Handling
-// ============================================================================
 
 /// How to handle symlinks during file enumeration and transfer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

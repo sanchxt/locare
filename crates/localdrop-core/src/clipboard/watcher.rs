@@ -140,7 +140,13 @@ impl ClipboardWatcher {
             }
         });
 
-        (rx, WatcherHandle { stop_tx, last_hash: last_hash_for_handle })
+        (
+            rx,
+            WatcherHandle {
+                stop_tx,
+                last_hash: last_hash_for_handle,
+            },
+        )
     }
 }
 
@@ -288,23 +294,18 @@ mod tests {
 
         let (mut rx, handle) = watcher.start(Box::new(mock));
 
-        // Set content FIRST
         {
-            *content_ref.lock().unwrap() =
-                Some(ClipboardContent::Text("New content".to_string()));
+            *content_ref.lock().unwrap() = Some(ClipboardContent::Text("New content".to_string()));
         }
 
-        // Calculate expected hash
         let expected_hash = ClipboardContent::Text("New content".to_string()).hash();
-
-        // Pre-set the watcher hash via handle BEFORE it polls
         handle.set_last_hash(expected_hash);
 
-        // Wait for poll cycle - should NOT detect change since hash matches
         let result = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
-
-        // Should timeout because no change detected (hash was pre-set)
-        assert!(result.is_err(), "Expected timeout - hash was pre-set so no change should be detected");
+        assert!(
+            result.is_err(),
+            "Expected timeout - hash was pre-set so no change should be detected"
+        );
 
         handle.stop().await;
     }
@@ -316,17 +317,13 @@ mod tests {
 
         let (_rx, handle) = watcher.start(Box::new(mock));
 
-        // Get the hash ref and update it directly
         let hash_ref = handle.last_hash_ref();
         hash_ref.store(99999, std::sync::atomic::Ordering::SeqCst);
 
-        // Verify the handle's set_last_hash uses the same Arc
         assert_eq!(hash_ref.load(std::sync::atomic::Ordering::SeqCst), 99999);
 
-        // Update via handle method
         handle.set_last_hash(12345);
 
-        // Verify both see the same value
         assert_eq!(hash_ref.load(std::sync::atomic::Ordering::SeqCst), 12345);
 
         handle.stop().await;

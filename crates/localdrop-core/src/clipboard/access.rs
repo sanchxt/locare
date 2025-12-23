@@ -421,12 +421,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // Mutex to serialize clipboard tests since they share the system clipboard.
     static CLIPBOARD_LOCK: Mutex<()> = Mutex::new(());
-
-    // Clipboard tests are skipped on Windows (heap corruption) and macOS (SIGSEGV)
-    // in CI due to issues when accessing clipboard in headless environments.
-    // See: https://github.com/1Password/arboard/issues/30
 
     #[test]
     #[cfg_attr(any(windows, target_os = "macos"), ignore)]
