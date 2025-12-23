@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -1141,18 +1141,23 @@ impl SyncSessionRunner {
 
         let content_cache: ContentCache = Arc::new(tokio::sync::Mutex::new(None));
 
-        let tls_stream = Arc::new(tokio::sync::Mutex::new(self.tls_stream));
+        // Split TLS stream into separate read/write halves to avoid mutex contention
+        // This allows the inbound task to read while the outbound task writes
+        let (read_half, write_half) = tokio::io::split(self.tls_stream);
+        let reader: Arc<tokio::sync::Mutex<ReadHalf<TlsStreamKind>>> =
+            Arc::new(tokio::sync::Mutex::new(read_half));
+        let writer: Arc<tokio::sync::Mutex<WriteHalf<TlsStreamKind>>> =
+            Arc::new(tokio::sync::Mutex::new(write_half));
 
         let last_local_hash = self.last_local_hash;
         let last_remote_hash = self.last_remote_hash;
         let mut shutdown_rx = self.shutdown_rx;
-        let tls_stream_clone = Arc::clone(&tls_stream);
         let event_tx_clone = event_tx.clone();
 
         let outbound_task = {
             let last_remote = Arc::clone(&last_remote_hash);
             let last_local = Arc::clone(&last_local_hash);
-            let stream = Arc::clone(&tls_stream);
+            let writer_clone = Arc::clone(&writer);
             let cache = Arc::clone(&content_cache);
             let items_sent_clone = Arc::clone(&items_sent);
             let bytes_sent_clone = Arc::clone(&bytes_sent);
@@ -1199,7 +1204,7 @@ impl SyncSessionRunner {
 
                     let payload = protocol::encode_payload(&notification)?;
                     protocol::write_frame(
-                        &mut *stream.lock().await,
+                        &mut *writer_clone.lock().await,
                         MessageType::ClipboardChanged,
                         &payload,
                     )
@@ -1225,7 +1230,8 @@ impl SyncSessionRunner {
 
         let inbound_task = {
             let last_remote = Arc::clone(&last_remote_hash);
-            let stream = Arc::clone(&tls_stream_clone);
+            let reader_clone = Arc::clone(&reader);
+            let writer_clone = Arc::clone(&writer);
             let cache = Arc::clone(&content_cache);
             let watcher_hash = watcher_handle.last_hash_ref();
             let items_received_clone = Arc::clone(&items_received);
@@ -1236,8 +1242,8 @@ impl SyncSessionRunner {
 
                 loop {
                     let (header, payload) = {
-                        let mut reader = stream.lock().await;
-                        protocol::read_frame(&mut *reader).await?
+                        let mut reader_guard = reader_clone.lock().await;
+                        protocol::read_frame(&mut *reader_guard).await?
                     };
 
                     match header.message_type {
@@ -1253,7 +1259,7 @@ impl SyncSessionRunner {
                             );
 
                             protocol::write_frame(
-                                &mut *stream.lock().await,
+                                &mut *writer_clone.lock().await,
                                 MessageType::ClipboardRequest,
                                 &[],
                             )
@@ -1261,8 +1267,8 @@ impl SyncSessionRunner {
 
                             let content: Option<ClipboardContent> = loop {
                                 let (header, data) = {
-                                    let mut reader = stream.lock().await;
-                                    protocol::read_frame(&mut *reader).await?
+                                    let mut reader_guard = reader_clone.lock().await;
+                                    protocol::read_frame(&mut *reader_guard).await?
                                 };
 
                                 match header.message_type {
@@ -1289,7 +1295,7 @@ impl SyncSessionRunner {
                                     }
                                     MessageType::Ping => {
                                         protocol::write_frame(
-                                            &mut *stream.lock().await,
+                                            &mut *writer_clone.lock().await,
                                             MessageType::Pong,
                                             &[],
                                         )
@@ -1363,7 +1369,7 @@ impl SyncSessionRunner {
                             };
                             let ack_payload = protocol::encode_payload(&ack)?;
                             protocol::write_frame(
-                                &mut *stream.lock().await,
+                                &mut *writer_clone.lock().await,
                                 MessageType::ClipboardAck,
                                 &ack_payload,
                             )
@@ -1392,7 +1398,7 @@ impl SyncSessionRunner {
                                 response.extend_from_slice(&data);
 
                                 protocol::write_frame(
-                                    &mut *stream.lock().await,
+                                    &mut *writer_clone.lock().await,
                                     MessageType::ClipboardData,
                                     &response,
                                 )
@@ -1405,7 +1411,7 @@ impl SyncSessionRunner {
                                 };
                                 let ack_payload = protocol::encode_payload(&ack)?;
                                 protocol::write_frame(
-                                    &mut *stream.lock().await,
+                                    &mut *writer_clone.lock().await,
                                     MessageType::ClipboardAck,
                                     &ack_payload,
                                 )
@@ -1414,7 +1420,7 @@ impl SyncSessionRunner {
                         }
                         MessageType::Ping => {
                             protocol::write_frame(
-                                &mut *stream.lock().await,
+                                &mut *writer_clone.lock().await,
                                 MessageType::Pong,
                                 &[],
                             )
