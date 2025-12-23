@@ -11,10 +11,6 @@ use localdrop_core::file::FileMetadata;
 use localdrop_core::transfer::resume::ResumeManager;
 use localdrop_core::transfer::ResumeState;
 
-// ============================================================================
-// Resume State Tests
-// ============================================================================
-
 /// Test that `ResumeState` can be serialized and deserialized correctly.
 #[test]
 fn test_resume_state_serialization() {
@@ -122,10 +118,6 @@ fn test_resume_state_empty_transfer() {
     assert!((state.progress_percentage() - 100.0).abs() < f64::EPSILON);
     assert!(state.is_transfer_completed());
 }
-
-// ============================================================================
-// Resume Manager Tests
-// ============================================================================
 
 /// Test that `ResumeManager` can save and load states.
 #[tokio::test]
@@ -240,10 +232,6 @@ async fn test_resume_manager_delete_nonexistent() {
     assert!(result.is_ok());
 }
 
-// ============================================================================
-// FileWriter Resumable Tests
-// ============================================================================
-
 /// Test resumable `FileWriter` creation and offset writing.
 #[tokio::test]
 async fn test_file_writer_resumable() {
@@ -328,10 +316,6 @@ async fn test_file_writer_out_of_order_chunks() {
     let metadata = std::fs::metadata(&file_path).expect("get metadata");
     assert_eq!(metadata.len(), total_size as u64);
 }
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
 
 fn create_test_resume_state(code: &str) -> ResumeState {
     let files = vec![

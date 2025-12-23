@@ -419,14 +419,14 @@ pub fn create_clipboard() -> Result<Box<dyn ClipboardAccess>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    // Clipboard tests are skipped on Windows (heap corruption) and macOS (SIGSEGV)
-    // in CI due to issues when accessing clipboard in headless environments.
-    // See: https://github.com/1Password/arboard/issues/30
+    static CLIPBOARD_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     #[cfg_attr(any(windows, target_os = "macos"), ignore)]
     fn test_create_clipboard() {
+        let _lock = CLIPBOARD_LOCK.lock().unwrap();
         let result = create_clipboard();
         if result.is_err() {
             eprintln!("Skipping clipboard test (no display available)");
@@ -438,6 +438,7 @@ mod tests {
     #[test]
     #[cfg_attr(any(windows, target_os = "macos"), ignore)]
     fn test_clipboard_text_roundtrip() {
+        let _lock = CLIPBOARD_LOCK.lock().unwrap();
         let clipboard = create_clipboard();
         if clipboard.is_err() {
             eprintln!("Skipping clipboard test (no display available)");
@@ -467,6 +468,7 @@ mod tests {
     #[test]
     #[cfg_attr(any(windows, target_os = "macos"), ignore)]
     fn test_content_hash_consistency() {
+        let _lock = CLIPBOARD_LOCK.lock().unwrap();
         let clipboard = create_clipboard();
         if clipboard.is_err() {
             eprintln!("Skipping clipboard test (no display available)");

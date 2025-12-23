@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -1119,37 +1119,63 @@ impl SyncSessionRunner {
     pub async fn run(self) -> Result<(SyncStats, mpsc::Receiver<SyncEvent>)> {
         let (event_tx, event_rx) = mpsc::channel(32);
 
-        let mut stats = SyncStats::default();
         let started_at = Instant::now();
+
+        let items_sent = Arc::new(AtomicU64::new(0));
+        let bytes_sent = Arc::new(AtomicU64::new(0));
+        let items_received = Arc::new(AtomicU64::new(0));
+        let bytes_received = Arc::new(AtomicU64::new(0));
 
         let watcher = ClipboardWatcher::new();
         let mut clipboard = create_clipboard()?;
 
         let initial_hash = clipboard.content_hash();
+        tracing::debug!("Initial clipboard hash: {}", initial_hash);
         watcher.set_last_hash(initial_hash);
 
-        let (mut change_rx, watcher_handle) = watcher.start(clipboard);
+        let (change_rx, watcher_handle) = watcher.start(clipboard);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let content_cache: ContentCache = Arc::new(tokio::sync::Mutex::new(None));
 
-        let tls_stream = Arc::new(tokio::sync::Mutex::new(self.tls_stream));
+        let (read_half, write_half) = tokio::io::split(self.tls_stream);
+        let reader: Arc<tokio::sync::Mutex<ReadHalf<TlsStreamKind>>> =
+            Arc::new(tokio::sync::Mutex::new(read_half));
+        let writer: Arc<tokio::sync::Mutex<WriteHalf<TlsStreamKind>>> =
+            Arc::new(tokio::sync::Mutex::new(write_half));
 
         let last_local_hash = self.last_local_hash;
         let last_remote_hash = self.last_remote_hash;
         let mut shutdown_rx = self.shutdown_rx;
-        let tls_stream_clone = Arc::clone(&tls_stream);
         let event_tx_clone = event_tx.clone();
 
         let outbound_task = {
             let last_remote = Arc::clone(&last_remote_hash);
             let last_local = Arc::clone(&last_local_hash);
-            let stream = Arc::clone(&tls_stream);
+            let writer_clone = Arc::clone(&writer);
             let cache = Arc::clone(&content_cache);
+            let items_sent_clone = Arc::clone(&items_sent);
+            let bytes_sent_clone = Arc::clone(&bytes_sent);
+            let mut change_rx = change_rx;
             tokio::spawn(async move {
+                tracing::debug!("Outbound sync task started");
                 while let Some(change) = change_rx.recv().await {
-                    if change.hash == last_remote.load(Ordering::SeqCst) {
+                    let remote_hash = last_remote.load(Ordering::SeqCst);
+                    if change.hash == remote_hash {
+                        tracing::debug!(
+                            "Outbound: skipping change (hash {} matches last remote)",
+                            change.hash
+                        );
                         continue;
                     }
+
+                    tracing::info!(
+                        "Outbound: sending clipboard change {:?} ({} bytes, hash {})",
+                        change.content.content_type(),
+                        change.content.size(),
+                        change.hash
+                    );
 
                     last_local.store(change.hash, Ordering::SeqCst);
 
@@ -1174,11 +1200,14 @@ impl SyncSessionRunner {
 
                     let payload = protocol::encode_payload(&notification)?;
                     protocol::write_frame(
-                        &mut *stream.lock().await,
+                        &mut *writer_clone.lock().await,
                         MessageType::ClipboardChanged,
                         &payload,
                     )
                     .await?;
+
+                    items_sent_clone.fetch_add(1, Ordering::SeqCst);
+                    bytes_sent_clone.fetch_add(change.content.size(), Ordering::SeqCst);
 
                     let _ = event_tx_clone
                         .send(SyncEvent::Sent {
@@ -1186,22 +1215,30 @@ impl SyncSessionRunner {
                             size: change.content.size(),
                         })
                         .await;
+
+                    tracing::debug!("Outbound: change sent successfully");
                 }
+                tracing::debug!("Outbound sync task ending (change_rx closed)");
                 Ok::<_, Error>(())
             })
         };
 
         let inbound_task = {
             let last_remote = Arc::clone(&last_remote_hash);
-            let stream = Arc::clone(&tls_stream_clone);
+            let reader_clone = Arc::clone(&reader);
+            let writer_clone = Arc::clone(&writer);
             let cache = Arc::clone(&content_cache);
+            let watcher_hash = watcher_handle.last_hash_ref();
+            let items_received_clone = Arc::clone(&items_received);
+            let bytes_received_clone = Arc::clone(&bytes_received);
             tokio::spawn(async move {
+                tracing::debug!("Inbound sync task started");
                 let mut clipboard = create_clipboard()?;
 
                 loop {
                     let (header, payload) = {
-                        let mut reader = stream.lock().await;
-                        protocol::read_frame(&mut *reader).await?
+                        let mut reader_guard = reader_clone.lock().await;
+                        protocol::read_frame(&mut *reader_guard).await?
                     };
 
                     match header.message_type {
@@ -1209,8 +1246,15 @@ impl SyncSessionRunner {
                             let changed: ClipboardChangedPayload =
                                 protocol::decode_payload(&payload)?;
 
+                            tracing::info!(
+                                "Inbound: received clipboard change notification {:?} ({} bytes, hash {})",
+                                changed.content_type,
+                                changed.size,
+                                changed.checksum
+                            );
+
                             protocol::write_frame(
-                                &mut *stream.lock().await,
+                                &mut *writer_clone.lock().await,
                                 MessageType::ClipboardRequest,
                                 &[],
                             )
@@ -1218,8 +1262,8 @@ impl SyncSessionRunner {
 
                             let content: Option<ClipboardContent> = loop {
                                 let (header, data) = {
-                                    let mut reader = stream.lock().await;
-                                    protocol::read_frame(&mut *reader).await?
+                                    let mut reader_guard = reader_clone.lock().await;
+                                    protocol::read_frame(&mut *reader_guard).await?
                                 };
 
                                 match header.message_type {
@@ -1246,7 +1290,7 @@ impl SyncSessionRunner {
                                     }
                                     MessageType::Ping => {
                                         protocol::write_frame(
-                                            &mut *stream.lock().await,
+                                            &mut *writer_clone.lock().await,
                                             MessageType::Pong,
                                             &[],
                                         )
@@ -1260,6 +1304,19 @@ impl SyncSessionRunner {
                             };
 
                             if let Some(content) = content {
+                                let hash = content.hash();
+                                let content_size = content.size();
+
+                                tracing::debug!(
+                                    "Inbound: writing to clipboard (hash {}, {} bytes)",
+                                    hash,
+                                    content_size
+                                );
+
+                                watcher_hash.store(hash, Ordering::SeqCst);
+
+                                last_remote.store(hash, Ordering::SeqCst);
+
                                 match clipboard.write_and_wait(&content, Duration::from_secs(2)) {
                                     Ok(()) => {
                                         #[cfg(target_os = "linux")]
@@ -1270,18 +1327,34 @@ impl SyncSessionRunner {
                                             );
                                         }
 
-                                        last_remote.store(changed.checksum, Ordering::SeqCst);
+                                        #[cfg(not(target_os = "linux"))]
+                                        tokio::time::sleep(Duration::from_millis(100)).await;
+
+                                        items_received_clone.fetch_add(1, Ordering::SeqCst);
+                                        bytes_received_clone
+                                            .fetch_add(content_size, Ordering::SeqCst);
+
                                         let _ = event_tx
                                             .send(SyncEvent::Received {
                                                 content_type: changed.content_type,
                                                 size: changed.size,
                                             })
                                             .await;
+
+                                        tracing::info!(
+                                            "Inbound: clipboard updated successfully ({:?}, {} bytes)",
+                                            changed.content_type,
+                                            content_size
+                                        );
                                     }
                                     Err(e) => {
                                         tracing::warn!("Failed to write clipboard in sync: {}", e);
                                     }
                                 }
+                            } else {
+                                tracing::warn!(
+                                    "Inbound: received empty content for clipboard change"
+                                );
                             }
 
                             let ack = ClipboardAckPayload {
@@ -1290,7 +1363,7 @@ impl SyncSessionRunner {
                             };
                             let ack_payload = protocol::encode_payload(&ack)?;
                             protocol::write_frame(
-                                &mut *stream.lock().await,
+                                &mut *writer_clone.lock().await,
                                 MessageType::ClipboardAck,
                                 &ack_payload,
                             )
@@ -1319,7 +1392,7 @@ impl SyncSessionRunner {
                                 response.extend_from_slice(&data);
 
                                 protocol::write_frame(
-                                    &mut *stream.lock().await,
+                                    &mut *writer_clone.lock().await,
                                     MessageType::ClipboardData,
                                     &response,
                                 )
@@ -1332,7 +1405,7 @@ impl SyncSessionRunner {
                                 };
                                 let ack_payload = protocol::encode_payload(&ack)?;
                                 protocol::write_frame(
-                                    &mut *stream.lock().await,
+                                    &mut *writer_clone.lock().await,
                                     MessageType::ClipboardAck,
                                     &ack_payload,
                                 )
@@ -1341,7 +1414,7 @@ impl SyncSessionRunner {
                         }
                         MessageType::Ping => {
                             protocol::write_frame(
-                                &mut *stream.lock().await,
+                                &mut *writer_clone.lock().await,
                                 MessageType::Pong,
                                 &[],
                             )
@@ -1359,24 +1432,44 @@ impl SyncSessionRunner {
         };
 
         tokio::select! {
+            biased;
             _ = shutdown_rx.recv() => {
                 tracing::debug!("Sync session shutdown requested");
             }
             result = outbound_task => {
-                if let Err(e) = result {
-                    tracing::warn!("Outbound task error: {}", e);
+                match result {
+                    Ok(Ok(())) => tracing::debug!("Outbound task completed normally"),
+                    Ok(Err(e)) => tracing::warn!("Outbound task error: {}", e),
+                    Err(e) => tracing::warn!("Outbound task panicked: {}", e),
                 }
             }
             result = inbound_task => {
-                if let Err(e) = result {
-                    tracing::warn!("Inbound task error: {}", e);
+                match result {
+                    Ok(Ok(())) => tracing::debug!("Inbound task completed normally"),
+                    Ok(Err(e)) => tracing::warn!("Inbound task error: {}", e),
+                    Err(e) => tracing::warn!("Inbound task panicked: {}", e),
                 }
             }
         }
 
         watcher_handle.stop().await;
 
-        stats.duration = started_at.elapsed();
+        let stats = SyncStats {
+            duration: started_at.elapsed(),
+            items_sent: items_sent.load(Ordering::SeqCst),
+            bytes_sent: bytes_sent.load(Ordering::SeqCst),
+            items_received: items_received.load(Ordering::SeqCst),
+            bytes_received: bytes_received.load(Ordering::SeqCst),
+        };
+
+        tracing::info!(
+            "Sync session complete: sent {} items ({} bytes), received {} items ({} bytes)",
+            stats.items_sent,
+            stats.bytes_sent,
+            stats.items_received,
+            stats.bytes_received
+        );
+
         Ok((stats, event_rx))
     }
 }

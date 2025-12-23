@@ -13,10 +13,6 @@ use localdrop_core::discovery::{
     HybridBroadcaster, HybridListener,
 };
 
-// ============================================================================
-// mDNS Properties Tests
-// ============================================================================
-
 /// Test that `MdnsProperties` can be converted to TXT properties correctly.
 #[test]
 fn test_mdns_properties_to_txt_properties() {
@@ -67,10 +63,6 @@ fn test_mdns_service_type_format() {
     assert!(SERVICE_TYPE.ends_with(".local."));
 }
 
-// ============================================================================
-// mDNS Broadcaster Tests
-// ============================================================================
-
 /// Test creating an mDNS broadcaster.
 #[test]
 fn test_mdns_broadcaster_creation() {
@@ -116,10 +108,6 @@ async fn test_mdns_service_registration_lifecycle() {
     let result = broadcaster.shutdown();
     assert!(result.is_ok(), "Shutdown should succeed: {result:?}");
 }
-
-// ============================================================================
-// mDNS Listener Tests
-// ============================================================================
 
 /// Test creating an mDNS listener.
 #[test]
@@ -170,10 +158,6 @@ async fn test_mdns_listener_find_timeout() {
 
     let _ = listener.shutdown();
 }
-
-// ============================================================================
-// Hybrid Discovery Tests
-// ============================================================================
 
 /// Test hybrid broadcaster creation.
 #[tokio::test]
@@ -270,10 +254,6 @@ async fn test_hybrid_listener_sequential_mdns_first() {
 
     assert!(result.is_err(), "Should timeout for non-existent code");
 }
-
-// ============================================================================
-// End-to-End Discovery Tests (requires real network)
-// ============================================================================
 
 /// Integration test: register service and discover it.
 /// This test is ignored by default as it requires real mDNS network support.
