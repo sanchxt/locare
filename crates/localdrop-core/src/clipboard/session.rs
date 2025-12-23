@@ -1195,6 +1195,7 @@ impl SyncSessionRunner {
             let last_remote = Arc::clone(&last_remote_hash);
             let stream = Arc::clone(&tls_stream_clone);
             let cache = Arc::clone(&content_cache);
+            let watcher_hash = watcher_handle.last_hash_ref();
             tokio::spawn(async move {
                 let mut clipboard = create_clipboard()?;
 
@@ -1260,6 +1261,14 @@ impl SyncSessionRunner {
                             };
 
                             if let Some(content) = content {
+                                let hash = content.hash();
+
+                                // Update watcher hash BEFORE writing to prevent detecting our own write
+                                watcher_hash.store(hash, Ordering::SeqCst);
+
+                                // Update last_remote BEFORE writing to prevent outbound filter race
+                                last_remote.store(hash, Ordering::SeqCst);
+
                                 match clipboard.write_and_wait(&content, Duration::from_secs(2)) {
                                     Ok(()) => {
                                         #[cfg(target_os = "linux")]
@@ -1270,7 +1279,6 @@ impl SyncSessionRunner {
                                             );
                                         }
 
-                                        last_remote.store(changed.checksum, Ordering::SeqCst);
                                         let _ = event_tx
                                             .send(SyncEvent::Received {
                                                 content_type: changed.content_type,

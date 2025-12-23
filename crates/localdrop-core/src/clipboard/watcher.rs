@@ -86,6 +86,7 @@ impl ClipboardWatcher {
         let (tx, rx) = mpsc::channel(16);
         let poll_interval = self.poll_interval;
         let last_hash = Arc::clone(&self.last_hash);
+        let last_hash_for_handle = Arc::clone(&self.last_hash);
 
         let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
 
@@ -121,7 +122,7 @@ impl ClipboardWatcher {
             }
         });
 
-        (rx, WatcherHandle { stop_tx })
+        (rx, WatcherHandle { stop_tx, last_hash: last_hash_for_handle })
     }
 }
 
@@ -131,15 +132,33 @@ impl Default for ClipboardWatcher {
     }
 }
 
-/// Handle to stop the clipboard watcher.
+/// Handle to stop the clipboard watcher and update its state.
 pub struct WatcherHandle {
     stop_tx: mpsc::Sender<()>,
+    /// Shared reference to the watcher's last known hash
+    last_hash: Arc<AtomicU64>,
 }
 
 impl WatcherHandle {
     /// Stop the watcher.
     pub async fn stop(self) {
         let _ = self.stop_tx.send(()).await;
+    }
+
+    /// Update the watcher's last known hash.
+    ///
+    /// Call this BEFORE writing to the clipboard to prevent the watcher
+    /// from detecting our own writes as changes.
+    pub fn set_last_hash(&self, hash: u64) {
+        self.last_hash.store(hash, Ordering::SeqCst);
+    }
+
+    /// Get a reference to the last_hash Arc for sharing with other tasks.
+    ///
+    /// This allows multiple tasks to update the watcher's hash state.
+    #[must_use]
+    pub fn last_hash_ref(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.last_hash)
     }
 }
 
@@ -239,6 +258,58 @@ mod tests {
                 panic!("Expected text content");
             }
         }
+
+        handle.stop().await;
+    }
+
+    #[tokio::test]
+    async fn test_watcher_handle_set_last_hash() {
+        let watcher = ClipboardWatcher::with_interval(Duration::from_millis(50));
+        let mock = MockClipboard::new();
+        let content_ref = Arc::clone(&mock.content);
+
+        let (mut rx, handle) = watcher.start(Box::new(mock));
+
+        // Set content FIRST
+        {
+            *content_ref.lock().unwrap() =
+                Some(ClipboardContent::Text("New content".to_string()));
+        }
+
+        // Calculate expected hash
+        let expected_hash = ClipboardContent::Text("New content".to_string()).hash();
+
+        // Pre-set the watcher hash via handle BEFORE it polls
+        handle.set_last_hash(expected_hash);
+
+        // Wait for poll cycle - should NOT detect change since hash matches
+        let result = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+
+        // Should timeout because no change detected (hash was pre-set)
+        assert!(result.is_err(), "Expected timeout - hash was pre-set so no change should be detected");
+
+        handle.stop().await;
+    }
+
+    #[tokio::test]
+    async fn test_watcher_handle_last_hash_ref() {
+        let watcher = ClipboardWatcher::with_interval(Duration::from_millis(50));
+        let mock = MockClipboard::new();
+
+        let (_rx, handle) = watcher.start(Box::new(mock));
+
+        // Get the hash ref and update it directly
+        let hash_ref = handle.last_hash_ref();
+        hash_ref.store(99999, std::sync::atomic::Ordering::SeqCst);
+
+        // Verify the handle's set_last_hash uses the same Arc
+        assert_eq!(hash_ref.load(std::sync::atomic::Ordering::SeqCst), 99999);
+
+        // Update via handle method
+        handle.set_last_hash(12345);
+
+        // Verify both see the same value
+        assert_eq!(hash_ref.load(std::sync::atomic::Ordering::SeqCst), 12345);
 
         handle.stop().await;
     }
