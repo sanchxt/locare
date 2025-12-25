@@ -12,6 +12,7 @@ use localdrop_core::clipboard::{
 use localdrop_core::transfer::TransferConfig;
 
 use super::{ClipboardAction, ClipboardArgs};
+use crate::ui::CodeBox;
 
 /// Run the clipboard command.
 pub async fn run(args: ClipboardArgs) -> Result<()> {
@@ -72,11 +73,7 @@ async fn run_share(_args: super::ClipboardShareArgs, quiet: bool, json: bool) ->
         println!("  Sharing clipboard: {}", content_preview);
         println!("  Size: {}", content_size);
         println!();
-        println!("  +-----------------------------------+");
-        println!("  |                                   |");
-        println!("  |       Code:  {}                   |", code);
-        println!("  |                                   |");
-        println!("  +-----------------------------------+");
+        CodeBox::new(&code).display();
         println!();
         println!("  Waiting for receiver...");
         println!();
@@ -301,11 +298,7 @@ async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Re
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else if !quiet {
-            println!("  +-----------------------------------+");
-            println!("  |                                   |");
-            println!("  |       Code:  {}                   |", code.as_str());
-            println!("  |                                   |");
-            println!("  +-----------------------------------+");
+            CodeBox::new(code.as_str()).display();
             println!();
             println!("  Waiting for peer to connect...");
             println!("  Press Ctrl+C to stop sync");

@@ -22,6 +22,7 @@ use anyhow::Result;
 use clap::Parser;
 
 mod commands;
+pub mod ui;
 
 use commands::{Cli, Command};
 

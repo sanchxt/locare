@@ -1,6 +1,7 @@
 //! Share command implementation.
 
 use std::io::{self, Write};
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::watch;
@@ -9,6 +10,7 @@ use localdrop_core::file::format_size;
 use localdrop_core::transfer::{ShareSession, TransferConfig, TransferProgress, TransferState};
 
 use super::ShareArgs;
+use crate::ui::{format_remaining, parse_duration, CodeBox};
 
 /// Run the share command.
 pub async fn run(args: ShareArgs) -> Result<()> {
@@ -58,24 +60,22 @@ pub async fn run(args: ShareArgs) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if !args.quiet {
-        println!("  +-----------------------------------+");
-        println!("  |                                   |");
-        println!("  |       Code:  {}                   |", code);
-        println!("  |                                   |");
-        println!("  |       Expires in {}               |", args.expire);
-        println!("  |                                   |");
-        println!("  +-----------------------------------+");
-        println!();
-        println!("  Waiting for receiver...");
+        CodeBox::new(&code).with_expire(&args.expire).display();
         println!();
     }
 
     let progress_rx = session.progress();
+    let expire_duration = parse_duration(&args.expire);
+    let start_time = Instant::now();
 
     let quiet = args.quiet;
     let json = args.json;
     let progress_handle = if !quiet && !json {
-        Some(tokio::spawn(display_progress(progress_rx)))
+        Some(tokio::spawn(display_progress(
+            progress_rx,
+            expire_duration,
+            start_time,
+        )))
     } else {
         None
     };
@@ -134,17 +134,24 @@ fn file_icon(file: &localdrop_core::file::FileMetadata) -> &'static str {
     }
 }
 
-async fn display_progress(mut rx: watch::Receiver<TransferProgress>) {
+async fn display_progress(
+    mut rx: watch::Receiver<TransferProgress>,
+    expire_duration: Option<std::time::Duration>,
+    start_time: Instant,
+) {
     let mut last_state = TransferState::Preparing;
+    let mut waiting_printed = false;
 
     loop {
-        if rx.changed().await.is_err() {
-            break;
-        }
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(1), rx.changed()).await;
 
         let progress = rx.borrow().clone();
 
         if progress.state != last_state {
+            if waiting_printed {
+                println!();
+                waiting_printed = false;
+            }
             last_state = progress.state;
 
             match progress.state {
@@ -169,7 +176,22 @@ async fn display_progress(mut rx: watch::Receiver<TransferProgress>) {
             }
         }
 
-        if progress.state == TransferState::Transferring {
+        if progress.state == TransferState::Waiting {
+            if let Some(expire) = expire_duration {
+                let elapsed = start_time.elapsed();
+                let remaining = expire.saturating_sub(elapsed);
+                print!(
+                    "\r  Waiting for receiver... ({} remaining)   ",
+                    format_remaining(remaining)
+                );
+                let _ = io::stdout().flush();
+                waiting_printed = true;
+            } else if !waiting_printed {
+                print!("\r  Waiting for receiver...   ");
+                let _ = io::stdout().flush();
+                waiting_printed = true;
+            }
+        } else if progress.state == TransferState::Transferring {
             let pct = progress.percentage();
             let speed = format_size(progress.speed_bps);
             let eta = progress
@@ -181,6 +203,13 @@ async fn display_progress(mut rx: watch::Receiver<TransferProgress>) {
                 pct, progress.current_file_name, speed, eta
             );
             let _ = io::stdout().flush();
+        }
+
+        if timeout.is_err() {
+            continue;
+        }
+        if timeout.unwrap().is_err() {
+            break;
         }
     }
 
