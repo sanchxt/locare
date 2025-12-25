@@ -275,6 +275,12 @@ async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Re
 
         run_sync_session(session, runner, quiet, json).await
     } else {
+        if !quiet && !json {
+            println!("  Starting sync session...");
+            println!("  Waiting for peer to connect...");
+            println!();
+        }
+
         let (code, session, runner) = match ClipboardSyncSession::host(config).await {
             Ok(result) => result,
             Err(e) => {
@@ -299,9 +305,6 @@ async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Re
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else if !quiet {
             CodeBox::new(code.as_str()).display();
-            println!();
-            println!("  Waiting for peer to connect...");
-            println!("  Press Ctrl+C to stop sync");
             println!();
         }
 
