@@ -1,18 +1,19 @@
 //! Clipboard sharing command implementation.
 
 use std::io::{self, Write};
+use std::time::Instant;
 
 use anyhow::{bail, Result};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use localdrop_core::clipboard::{
     diagnose_clipboard, ClipboardReceiveSession, ClipboardShareSession, ClipboardSyncSession,
-    SyncSessionRunner,
+    SyncHostSession, SyncSessionRunner,
 };
 use localdrop_core::transfer::TransferConfig;
 
 use super::{ClipboardAction, ClipboardArgs};
-use crate::ui::CodeBox;
+use crate::ui::{format_remaining, CodeBox};
 
 /// Run the clipboard command.
 pub async fn run(args: ClipboardArgs) -> Result<()> {
@@ -275,13 +276,7 @@ async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Re
 
         run_sync_session(session, runner, quiet, json).await
     } else {
-        if !quiet && !json {
-            println!("  Starting sync session...");
-            println!("  Waiting for peer to connect...");
-            println!();
-        }
-
-        let (code, session, runner) = match ClipboardSyncSession::host(config).await {
+        let host_session = match ClipboardSyncSession::host(config).await {
             Ok(result) => result,
             Err(e) => {
                 if json {
@@ -297,19 +292,67 @@ async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Re
             }
         };
 
+        let code = host_session.code().to_string();
+
         if json {
             let output = serde_json::json!({
                 "status": "waiting",
-                "code": code.as_str(),
+                "code": &code,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else if !quiet {
-            CodeBox::new(code.as_str()).display();
+            CodeBox::new(&code).display();
             println!();
         }
 
+        let (session, runner) =
+            wait_for_peer_with_display(host_session, quiet, json).await?;
+
         run_sync_session(session, runner, quiet, json).await
     }
+}
+
+async fn wait_for_peer_with_display(
+    host_session: SyncHostSession,
+    quiet: bool,
+    json: bool,
+) -> Result<(ClipboardSyncSession, SyncSessionRunner)> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let start_time = Instant::now();
+
+    let display_task = if !quiet && !json {
+        let stop_clone = Arc::clone(&stop);
+        Some(tokio::spawn(async move {
+            while !stop_clone.load(Ordering::Relaxed) {
+                let elapsed = start_time.elapsed();
+                print!(
+                    "\r  Waiting for peer to connect... ({} elapsed)   ",
+                    format_remaining(elapsed)
+                );
+                let _ = io::stdout().flush();
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }))
+    } else {
+        None
+    };
+
+    let result = host_session.wait_for_peer().await;
+
+    stop.store(true, Ordering::Relaxed);
+    if let Some(task) = display_task {
+        task.abort();
+        let _ = task.await;
+        if !quiet && !json {
+            print!("\r{}\r", " ".repeat(60));
+            let _ = io::stdout().flush();
+        }
+    }
+
+    result.map_err(Into::into)
 }
 
 /// Run the sync session loop.

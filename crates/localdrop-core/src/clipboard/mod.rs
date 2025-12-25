@@ -44,7 +44,7 @@ pub use access::{create_clipboard, diagnose_clipboard, ClipboardAccess, NativeCl
 pub use linux_holder::{hold_image_in_background, DisplayServer, DEFAULT_HOLDER_TIMEOUT};
 pub use session::{
     ClipboardReceiveSession, ClipboardShareSession, ClipboardSyncSession, SyncEvent,
-    SyncSessionRunner, SyncStats,
+    SyncHostSession, SyncSessionRunner, SyncStats,
 };
 pub use watcher::{ClipboardChange, ClipboardWatcher};
 

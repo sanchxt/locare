@@ -778,59 +778,40 @@ pub struct SyncStats {
     pub bytes_received: u64,
 }
 
-/// Live bidirectional clipboard sync session.
-pub struct ClipboardSyncSession {
-    /// Peer device name
-    peer_name: String,
-    /// Peer address
-    peer_addr: SocketAddr,
-    /// Local device name (retained for future features)
-    _device_name: String,
-    /// Last local content hash
-    last_local_hash: Arc<AtomicU64>,
-    /// Last remote content hash
-    last_remote_hash: Arc<AtomicU64>,
-    /// Sync statistics
-    stats: SyncStats,
-    /// Session start time
-    started_at: Instant,
-    /// Shutdown signal sender
-    shutdown_tx: broadcast::Sender<()>,
+/// Pending sync host session waiting for peer connection.
+///
+/// This struct is returned by [`ClipboardSyncSession::host`] and allows
+/// displaying the share code while waiting for a peer to connect.
+pub struct SyncHostSession {
+    code: ShareCode,
+    device_name: String,
+    session_key: [u8; 32],
+    tls_config: TlsConfig,
+    listener: TcpListener,
+    broadcaster: HybridBroadcaster,
 }
 
-impl ClipboardSyncSession {
-    /// Start as sync host (generates code, waits for connection).
+impl SyncHostSession {
+    /// Get the share code for this session.
+    #[must_use]
+    pub fn code(&self) -> &ShareCode {
+        &self.code
+    }
+
+    /// Wait for a peer to connect and complete the handshake.
+    ///
+    /// This method blocks until a peer connects, performs TLS handshake,
+    /// and verifies the share code.
     ///
     /// # Errors
     ///
-    /// Returns an error if session cannot be created.
-    pub async fn host(config: TransferConfig) -> Result<(ShareCode, Self, SyncSessionRunner)> {
-        let code = CodeGenerator::new().generate()?;
-
-        let device_name = hostname::get().map_or_else(
-            |_| "Unknown".to_string(),
-            |h| h.to_string_lossy().to_string(),
-        );
-
-        let session_key = crypto::derive_session_key(code.as_str());
-
-        let tls_config = TlsConfig::server()?;
-
-        let listener = TcpListener::bind(format!("0.0.0.0:{}", config.transfer_port)).await?;
-        let local_addr = listener.local_addr()?;
-
-        let broadcaster = HybridBroadcaster::new(config.discovery_port).await?;
-
-        let device_id = uuid::Uuid::new_v4();
-        let packet = DiscoveryPacket::new(&code, &device_name, device_id, local_addr.port(), 0, 0);
-
-        broadcaster.start(packet, config.broadcast_interval).await?;
-
-        let (stream, peer_addr) = listener.accept().await?;
-        broadcaster.stop().await;
+    /// Returns an error if connection or handshake fails.
+    pub async fn wait_for_peer(self) -> Result<(ClipboardSyncSession, SyncSessionRunner)> {
+        let (stream, peer_addr) = self.listener.accept().await?;
+        self.broadcaster.stop().await;
 
         let acceptor = TlsAcceptor::from(Arc::new(
-            tls_config
+            self.tls_config
                 .server_config()
                 .ok_or_else(|| Error::TlsError("no server config".to_string()))?
                 .clone(),
@@ -842,7 +823,7 @@ impl ClipboardSyncSession {
             .map_err(|e| Error::TlsError(format!("TLS handshake failed: {e}")))?;
 
         let hello = HelloPayload {
-            device_name: device_name.clone(),
+            device_name: self.device_name.clone(),
             protocol_version: "1.0".to_string(),
         };
         let payload = protocol::encode_payload(&hello)?;
@@ -866,7 +847,7 @@ impl ClipboardSyncSession {
         }
 
         let verify: CodeVerifyPayload = protocol::decode_payload(&payload)?;
-        let expected_hmac = crypto::hmac_sha256(&session_key, code.as_str().as_bytes());
+        let expected_hmac = crypto::hmac_sha256(&self.session_key, self.code.as_str().as_bytes());
         let success = crypto::constant_time_eq(&verify.code_hmac, &expected_hmac);
 
         let ack = CodeVerifyAckPayload {
@@ -881,15 +862,15 @@ impl ClipboardSyncSession {
         protocol::write_frame(&mut tls_stream, MessageType::CodeVerifyAck, &ack_payload).await?;
 
         if !success {
-            return Err(Error::CodeNotFound(code.to_string()));
+            return Err(Error::CodeNotFound(self.code.to_string()));
         }
 
         let (shutdown_tx, _) = broadcast::channel(1);
 
-        let session = Self {
+        let session = ClipboardSyncSession {
             peer_name: peer_hello.device_name,
             peer_addr,
-            _device_name: device_name,
+            _device_name: self.device_name,
             last_local_hash: Arc::new(AtomicU64::new(0)),
             last_remote_hash: Arc::new(AtomicU64::new(0)),
             stats: SyncStats::default(),
@@ -904,7 +885,69 @@ impl ClipboardSyncSession {
             shutdown_rx: shutdown_tx.subscribe(),
         };
 
-        Ok((code, session, runner))
+        Ok((session, runner))
+    }
+}
+
+/// Live bidirectional clipboard sync session.
+pub struct ClipboardSyncSession {
+    /// Peer device name
+    peer_name: String,
+    /// Peer address
+    peer_addr: SocketAddr,
+    /// Local device name (retained for future features)
+    _device_name: String,
+    /// Last local content hash
+    last_local_hash: Arc<AtomicU64>,
+    /// Last remote content hash
+    last_remote_hash: Arc<AtomicU64>,
+    /// Sync statistics
+    stats: SyncStats,
+    /// Session start time
+    started_at: Instant,
+    /// Shutdown signal sender
+    shutdown_tx: broadcast::Sender<()>,
+}
+
+impl ClipboardSyncSession {
+    /// Start as sync host (generates code, returns immediately).
+    ///
+    /// Returns a [`SyncHostSession`] that can be used to display the code
+    /// and wait for a peer to connect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if session setup fails.
+    pub async fn host(config: TransferConfig) -> Result<SyncHostSession> {
+        let code = CodeGenerator::new().generate()?;
+
+        let device_name = hostname::get().map_or_else(
+            |_| "Unknown".to_string(),
+            |h| h.to_string_lossy().to_string(),
+        );
+
+        let session_key = crypto::derive_session_key(code.as_str());
+
+        let tls_config = TlsConfig::server()?;
+
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", config.transfer_port)).await?;
+        let local_addr = listener.local_addr()?;
+
+        let broadcaster = HybridBroadcaster::new(config.discovery_port).await?;
+
+        let device_id = uuid::Uuid::new_v4();
+        let packet = DiscoveryPacket::new(&code, &device_name, device_id, local_addr.port(), 0, 0);
+
+        broadcaster.start(packet, config.broadcast_interval).await?;
+
+        Ok(SyncHostSession {
+            code,
+            device_name,
+            session_key,
+            tls_config,
+            listener,
+            broadcaster,
+        })
     }
 
     /// Connect to a sync host using code.
