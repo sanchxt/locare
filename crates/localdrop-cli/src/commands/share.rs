@@ -7,6 +7,10 @@ use anyhow::Result;
 use tokio::sync::watch;
 
 use localdrop_core::file::format_size;
+use localdrop_core::history::{
+    HistoryFileEntry, HistoryStore, TransferDirection, TransferHistoryEntry,
+    TransferState as HistoryState,
+};
 use localdrop_core::transfer::{ShareSession, TransferConfig, TransferProgress, TransferState};
 
 use super::ShareArgs;
@@ -28,49 +32,17 @@ pub async fn run(args: ShareArgs) -> Result<()> {
         println!();
     }
 
-    let files = session.files();
-    let total_files = files.len();
+    let files = session.files().to_vec();
     let total_size: u64 = files.iter().map(|f| f.size).sum();
-
-    if !args.quiet {
-        println!(
-            "  Sharing {} items ({})",
-            total_files,
-            format_size(total_size)
-        );
-        println!();
-        for file in files {
-            println!("  {} {}", file_icon(file), file.file_name());
-        }
-        println!();
-    }
-
     let code = session.code().to_string();
 
-    if args.json {
-        let output = serde_json::json!({
-            "code": code,
-            "files": files.iter().map(|f| serde_json::json!({
-                "name": f.file_name(),
-                "size": f.size,
-                "path": f.relative_path.display().to_string(),
-            })).collect::<Vec<_>>(),
-            "total_size": total_size,
-            "expire": args.expire,
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if !args.quiet {
-        CodeBox::new(&code).with_expire(&args.expire).display();
-        println!();
-    }
+    display_share_info(&files, total_size, &code, &args)?;
 
     let progress_rx = session.progress();
     let expire_duration = parse_duration(&args.expire);
     let start_time = Instant::now();
 
-    let quiet = args.quiet;
-    let json = args.json;
-    let progress_handle = if !quiet && !json {
+    let progress_handle = if !args.quiet && !args.json {
         Some(tokio::spawn(display_progress(
             progress_rx,
             expire_duration,
@@ -86,8 +58,73 @@ pub async fn run(args: ShareArgs) -> Result<()> {
         let _ = handle.await;
     }
 
+    let elapsed = start_time.elapsed();
+
+    handle_transfer_result(result, &code, &files, total_size, elapsed.as_secs(), &args)
+}
+
+/// Display share information (files and code).
+fn display_share_info(
+    files: &[localdrop_core::file::FileMetadata],
+    total_size: u64,
+    code: &str,
+    args: &ShareArgs,
+) -> Result<()> {
+    let total_files = files.len();
+
+    if !args.quiet {
+        println!(
+            "  Sharing {} items ({})",
+            total_files,
+            format_size(total_size)
+        );
+        println!();
+        for file in files {
+            println!("  {} {}", file_icon(file), file.file_name());
+        }
+        println!();
+    }
+
+    if args.json {
+        let output = serde_json::json!({
+            "code": code,
+            "files": files.iter().map(|f| serde_json::json!({
+                "name": f.file_name(),
+                "size": f.size,
+                "path": f.relative_path.display().to_string(),
+            })).collect::<Vec<_>>(),
+            "total_size": total_size,
+            "expire": args.expire,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else if !args.quiet {
+        CodeBox::new(code).with_expire(&args.expire).display();
+        println!();
+    }
+
+    Ok(())
+}
+
+/// Handle the result of the transfer and update history.
+fn handle_transfer_result(
+    result: localdrop_core::error::Result<()>,
+    code: &str,
+    files: &[localdrop_core::file::FileMetadata],
+    total_size: u64,
+    duration_secs: u64,
+    args: &ShareArgs,
+) -> Result<()> {
     match result {
         Ok(()) => {
+            record_history(
+                code,
+                files,
+                total_size,
+                duration_secs,
+                HistoryState::Completed,
+                None,
+            );
+
             if !args.quiet {
                 println!();
                 println!("  Transfer complete!");
@@ -104,12 +141,58 @@ pub async fn run(args: ShareArgs) -> Result<()> {
             Ok(())
         }
         Err(e) => {
+            record_history(
+                code,
+                files,
+                total_size,
+                duration_secs,
+                HistoryState::Failed,
+                Some(e.to_string()),
+            );
+
             if !args.quiet {
                 eprintln!();
                 eprintln!("  Transfer failed: {}", e);
                 eprintln!();
             }
             Err(e.into())
+        }
+    }
+}
+
+/// Record the transfer to history.
+fn record_history(
+    code: &str,
+    files: &[localdrop_core::file::FileMetadata],
+    total_bytes: u64,
+    duration_secs: u64,
+    state: HistoryState,
+    error: Option<String>,
+) {
+    let device_name = "Receiver".to_string();
+
+    let history_files: Vec<HistoryFileEntry> = files
+        .iter()
+        .map(|f| HistoryFileEntry {
+            name: f.file_name().to_string(),
+            size: f.size,
+            success: state == HistoryState::Completed,
+        })
+        .collect();
+
+    let mut entry =
+        TransferHistoryEntry::new(TransferDirection::Sent, device_name, code.to_string())
+            .with_files(history_files)
+            .with_stats(total_bytes, duration_secs)
+            .with_state(state);
+
+    if let Some(err_msg) = error {
+        entry = entry.with_error(err_msg);
+    }
+
+    if let Ok(mut store) = HistoryStore::load() {
+        if let Err(e) = store.add(entry) {
+            tracing::warn!("Failed to record history: {}", e);
         }
     }
 }

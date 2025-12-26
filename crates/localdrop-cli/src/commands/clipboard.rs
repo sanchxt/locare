@@ -305,8 +305,7 @@ async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Re
             println!();
         }
 
-        let (session, runner) =
-            wait_for_peer_with_display(host_session, quiet, json).await?;
+        let (session, runner) = wait_for_peer_with_display(host_session, quiet, json).await?;
 
         run_sync_session(session, runner, quiet, json).await
     }

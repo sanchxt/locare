@@ -17,6 +17,8 @@
 //! - Prevents impersonation of trusted devices
 //! - Trust database stored locally, never synced
 
+use std::fs;
+use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -24,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::config::TrustLevel;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// A trusted device record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,11 +73,28 @@ impl TrustedDevice {
     }
 }
 
+/// Serializable wrapper for the trust database.
+#[derive(Debug, Serialize, Deserialize)]
+struct TrustDatabase {
+    /// Version of the trust database format
+    version: u32,
+    /// List of trusted devices
+    devices: Vec<TrustedDevice>,
+}
+
+impl Default for TrustDatabase {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            devices: Vec::new(),
+        }
+    }
+}
+
 /// Trust database for managing trusted devices.
 #[derive(Debug)]
 pub struct TrustStore {
     /// Path to the trust database file
-    #[allow(dead_code)]
     path: PathBuf,
     /// Trusted devices
     devices: Vec<TrustedDevice>,
@@ -89,12 +108,7 @@ impl TrustStore {
     /// Returns an error if the store cannot be loaded.
     pub fn load() -> Result<Self> {
         let path = Self::default_path().unwrap_or_else(|| PathBuf::from("trust.json"));
-
-        // TODO: Load from file
-        Ok(Self {
-            path,
-            devices: Vec::new(),
-        })
+        Self::load_from(path)
     }
 
     /// Load from a specific path.
@@ -103,10 +117,33 @@ impl TrustStore {
     ///
     /// Returns an error if the store cannot be loaded.
     pub fn load_from(path: PathBuf) -> Result<Self> {
-        // TODO: Load from file
+        if !path.exists() {
+            return Ok(Self {
+                path,
+                devices: Vec::new(),
+            });
+        }
+
+        let file = fs::File::open(&path).map_err(|e| {
+            Error::ConfigError(format!(
+                "Failed to open trust store at {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        let reader = BufReader::new(file);
+        let db: TrustDatabase = serde_json::from_reader(reader).map_err(|e| {
+            Error::ConfigError(format!(
+                "Failed to parse trust store at {}: {}",
+                path.display(),
+                e
+            ))
+        })?;
+
         Ok(Self {
             path,
-            devices: Vec::new(),
+            devices: db.devices,
         })
     }
 
@@ -123,7 +160,38 @@ impl TrustStore {
     ///
     /// Returns an error if the store cannot be saved.
     pub fn save(&self) -> Result<()> {
-        // TODO: Save to file
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                Error::ConfigError(format!(
+                    "Failed to create trust store directory {}: {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
+        }
+
+        let db = TrustDatabase {
+            version: 1,
+            devices: self.devices.clone(),
+        };
+
+        let file = fs::File::create(&self.path).map_err(|e| {
+            Error::ConfigError(format!(
+                "Failed to create trust store at {}: {}",
+                self.path.display(),
+                e
+            ))
+        })?;
+
+        let writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(writer, &db).map_err(|e| {
+            Error::ConfigError(format!(
+                "Failed to write trust store at {}: {}",
+                self.path.display(),
+                e
+            ))
+        })?;
+
         Ok(())
     }
 
@@ -203,5 +271,121 @@ impl TrustStore {
     pub fn verify_key(&self, device_id: &Uuid, public_key: &str) -> bool {
         self.find_by_id(device_id)
             .is_some_and(|d| d.public_key == public_key)
+    }
+
+    /// Update the last seen timestamp for a device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be saved.
+    pub fn update_last_seen(&mut self, device_id: &Uuid) -> Result<bool> {
+        if let Some(device) = self.devices.iter_mut().find(|d| &d.device_id == device_id) {
+            device.update_last_seen();
+            self.save()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get the path to the trust store file.
+    #[must_use]
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Clear all trusted devices.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot be saved.
+    pub fn clear(&mut self) -> Result<()> {
+        self.devices.clear();
+        self.save()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_device() -> TrustedDevice {
+        TrustedDevice::new(
+            Uuid::new_v4(),
+            "Test Device".to_string(),
+            "test-public-key".to_string(),
+        )
+    }
+
+    #[test]
+    fn test_trust_store_save_and_load() {
+        let tmp_dir = TempDir::new().unwrap();
+        let trust_path = tmp_dir.path().join("trust.json");
+
+        let mut store = TrustStore::load_from(trust_path.clone()).unwrap();
+        let device = create_test_device();
+        let device_id = device.device_id;
+        store.add(device).unwrap();
+
+        let loaded_store = TrustStore::load_from(trust_path).unwrap();
+        assert_eq!(loaded_store.devices.len(), 1);
+        assert!(loaded_store.find_by_id(&device_id).is_some());
+    }
+
+    #[test]
+    fn test_trust_store_remove() {
+        let tmp_dir = TempDir::new().unwrap();
+        let trust_path = tmp_dir.path().join("trust.json");
+
+        let mut store = TrustStore::load_from(trust_path).unwrap();
+        let device = create_test_device();
+        let device_id = device.device_id;
+        store.add(device).unwrap();
+
+        assert!(store.remove(&device_id).unwrap());
+        assert!(store.devices.is_empty());
+    }
+
+    #[test]
+    fn test_trust_store_set_trust_level() {
+        let tmp_dir = TempDir::new().unwrap();
+        let trust_path = tmp_dir.path().join("trust.json");
+
+        let mut store = TrustStore::load_from(trust_path).unwrap();
+        let device = create_test_device();
+        let device_id = device.device_id;
+        store.add(device).unwrap();
+
+        store.set_trust_level(&device_id, TrustLevel::Full).unwrap();
+        assert_eq!(
+            store.find_by_id(&device_id).unwrap().trust_level,
+            TrustLevel::Full
+        );
+    }
+
+    #[test]
+    fn test_load_nonexistent_file() {
+        let tmp_dir = TempDir::new().unwrap();
+        let trust_path = tmp_dir.path().join("nonexistent.json");
+
+        let store = TrustStore::load_from(trust_path).unwrap();
+        assert!(store.devices.is_empty());
+    }
+
+    #[test]
+    fn test_verify_key() {
+        let tmp_dir = TempDir::new().unwrap();
+        let trust_path = tmp_dir.path().join("trust.json");
+
+        let mut store = TrustStore::load_from(trust_path).unwrap();
+        let device = create_test_device();
+        let device_id = device.device_id;
+        let public_key = device.public_key.clone();
+        store.add(device).unwrap();
+
+        assert!(store.verify_key(&device_id, &public_key));
+        assert!(!store.verify_key(&device_id, "wrong-key"));
+        assert!(!store.verify_key(&Uuid::new_v4(), &public_key));
     }
 }
