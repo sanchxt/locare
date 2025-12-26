@@ -18,6 +18,7 @@
 //! - [`crypto`] - Cryptographic primitives (TLS, hashing, signatures)
 //! - [`discovery`] - Network discovery via UDP broadcast and mDNS
 //! - [`mod@file`] - File operations, chunking, and metadata
+//! - [`history`] - Transfer history tracking and persistence
 //! - [`preview`] - File preview generation (thumbnails, text snippets)
 //! - [`protocol`] - LDRP wire protocol implementation
 //! - [`transfer`] - File transfer engine
@@ -59,6 +60,7 @@ pub mod crypto;
 pub mod discovery;
 pub mod error;
 pub mod file;
+pub mod history;
 pub mod preview;
 pub mod protocol;
 pub mod transfer;

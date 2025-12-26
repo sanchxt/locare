@@ -2,12 +2,17 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::watch;
 
 use localdrop_core::file::format_size;
+use localdrop_core::history::{
+    HistoryFileEntry, HistoryStore, TransferDirection, TransferHistoryEntry,
+    TransferState as HistoryState,
+};
 use localdrop_core::transfer::{ReceiveSession, TransferConfig, TransferProgress, TransferState};
 
 use super::ReceiveArgs;
@@ -41,7 +46,9 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
     let mut session = ReceiveSession::connect(&code, output_dir.clone(), config).await?;
 
     let (sender_addr, sender_name) = session.sender();
-    let files = session.files();
+    let sender_name = sender_name.to_string();
+    let sender_addr = *sender_addr;
+    let files = session.files().to_vec();
     let total_files = files.len();
     let total_size: u64 = files.iter().map(|f| f.size).sum();
 
@@ -49,7 +56,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let output = serde_json::json!({
             "status": "connected",
             "sender": {
-                "name": sender_name,
+                "name": &sender_name,
                 "address": sender_addr.to_string(),
             },
             "files": files.iter().map(|f| serde_json::json!({
@@ -61,7 +68,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if !args.quiet {
-        println!("  Found sender: {} ({})", sender_name, sender_addr);
+        println!("  Found sender: {} ({})", &sender_name, sender_addr);
         println!();
         println!(
             "  Receiving {} items ({}) to {}",
@@ -70,7 +77,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             output_dir.display()
         );
         println!();
-        for file in files {
+        for file in &files {
             println!("  {} {}", file_icon(file), file.file_name());
         }
         println!();
@@ -111,6 +118,7 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
     }
 
     let progress_rx = session.progress();
+    let start_time = Instant::now();
 
     let quiet = args.quiet;
     let json = args.json;
@@ -126,8 +134,21 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         let _ = handle.await;
     }
 
+    let elapsed = start_time.elapsed();
+
     match result {
         Ok(()) => {
+            record_history(
+                code.as_str(),
+                &sender_name,
+                &files,
+                total_size,
+                elapsed.as_secs(),
+                &output_dir,
+                HistoryState::Completed,
+                None,
+            );
+
             if !args.quiet && !args.json {
                 println!();
                 println!("  Transfer complete!");
@@ -147,12 +168,65 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
             Ok(())
         }
         Err(e) => {
+            record_history(
+                code.as_str(),
+                &sender_name,
+                &files,
+                total_size,
+                elapsed.as_secs(),
+                &output_dir,
+                HistoryState::Failed,
+                Some(e.to_string()),
+            );
+
             if !args.quiet && !args.json {
                 eprintln!();
                 eprintln!("  Transfer failed: {}", e);
                 eprintln!();
             }
             Err(e.into())
+        }
+    }
+}
+
+/// Record the transfer to history.
+#[allow(clippy::too_many_arguments)]
+fn record_history(
+    code: &str,
+    sender_name: &str,
+    files: &[localdrop_core::file::FileMetadata],
+    total_bytes: u64,
+    duration_secs: u64,
+    output_dir: &std::path::Path,
+    state: HistoryState,
+    error: Option<String>,
+) {
+    let history_files: Vec<HistoryFileEntry> = files
+        .iter()
+        .map(|f| HistoryFileEntry {
+            name: f.file_name().to_string(),
+            size: f.size,
+            success: state == HistoryState::Completed,
+        })
+        .collect();
+
+    let mut entry = TransferHistoryEntry::new(
+        TransferDirection::Received,
+        sender_name.to_string(),
+        code.to_string(),
+    )
+    .with_files(history_files)
+    .with_stats(total_bytes, duration_secs)
+    .with_state(state)
+    .with_output_dir(output_dir.to_path_buf());
+
+    if let Some(err_msg) = error {
+        entry = entry.with_error(err_msg);
+    }
+
+    if let Ok(mut store) = HistoryStore::load() {
+        if let Err(e) = store.add(entry) {
+            tracing::warn!("Failed to record history: {}", e);
         }
     }
 }
