@@ -66,6 +66,13 @@ impl TrustedDevice {
         }
     }
 
+    /// Set the trust level.
+    #[must_use]
+    pub fn with_trust_level(mut self, level: TrustLevel) -> Self {
+        self.trust_level = level;
+        self
+    }
+
     /// Update the last seen timestamp.
     pub fn update_last_seen(&mut self) {
         self.last_seen = SystemTime::now();

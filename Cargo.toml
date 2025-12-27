@@ -29,6 +29,7 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 sha2 = "0.10"
 hmac = "0.12"
 rand = "0.8"
+base64 = "0.22"
 
 # Hashing (fast, non-crypto)
 xxhash-rust = { version = "0.8", features = ["xxh3", "xxh64"] }

@@ -85,6 +85,14 @@ pub enum MessageType {
     ClipboardChanged = 0x53,
     /// Clipboard content request (for sync mode)
     ClipboardRequest = 0x54,
+    /// Trusted device hello (replaces Hello for trusted connections)
+    TrustedHello = 0x60,
+    /// Trusted device hello acknowledgment
+    TrustedHelloAck = 0x61,
+    /// Trusted device verification challenge
+    TrustedVerify = 0x62,
+    /// Trusted device verification response
+    TrustedVerifyAck = 0x63,
     /// Error message
     Error = 0xFF,
 }
@@ -115,6 +123,10 @@ impl MessageType {
             0x52 => Some(Self::ClipboardAck),
             0x53 => Some(Self::ClipboardChanged),
             0x54 => Some(Self::ClipboardRequest),
+            0x60 => Some(Self::TrustedHello),
+            0x61 => Some(Self::TrustedHelloAck),
+            0x62 => Some(Self::TrustedVerify),
+            0x63 => Some(Self::TrustedVerifyAck),
             0xFF => Some(Self::Error),
             _ => None,
         }
@@ -183,6 +195,12 @@ pub struct HelloPayload {
     pub device_name: String,
     /// Protocol version string
     pub protocol_version: String,
+    /// Device ID (optional, for trust feature)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub device_id: Option<uuid::Uuid>,
+    /// Base64-encoded Ed25519 public key (optional, for trust feature)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub public_key: Option<String>,
 }
 
 /// Code verification payload.
@@ -343,6 +361,84 @@ pub struct ClipboardChangedPayload {
     pub checksum: u64,
     /// Unix timestamp (milliseconds)
     pub timestamp: i64,
+}
+
+/// Trusted device hello payload.
+///
+/// Sent by the initiating device to establish a trusted connection.
+/// Unlike the regular Hello, this includes device identity for signature verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedHelloPayload {
+    /// Device name
+    pub device_name: String,
+    /// Protocol version string
+    pub protocol_version: String,
+    /// Unique device identifier
+    pub device_id: uuid::Uuid,
+    /// Base64-encoded Ed25519 public key
+    pub public_key: String,
+    /// Random nonce for challenge (32 bytes, base64-encoded)
+    pub nonce: String,
+    /// Ed25519 signature of the nonce using sender's private key (base64-encoded)
+    pub nonce_signature: String,
+}
+
+/// Trusted device hello acknowledgment payload.
+///
+/// Sent in response to `TrustedHello` if the sender is trusted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedHelloAckPayload {
+    /// Whether the sender is trusted
+    pub trusted: bool,
+    /// Device name (if trusted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    /// Device ID (if trusted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<uuid::Uuid>,
+    /// Base64-encoded Ed25519 public key (if trusted)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// Ed25519 signature of the received nonce (proves identity, base64-encoded)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce_signature: Option<String>,
+    /// Error message if not trusted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Trust level of the sender in receiver's store
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trust_level: Option<String>,
+}
+
+/// Trusted device verification challenge payload.
+///
+/// Optional additional verification step for AskEachTime trust level.
+/// Contains a new challenge nonce for mutual authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedVerifyPayload {
+    /// Random challenge nonce (32 bytes, base64-encoded)
+    pub challenge: String,
+    /// Files being offered (for sender confirmation in AskEachTime mode)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<Vec<crate::file::FileMetadata>>,
+    /// Total size (if files are included)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_size: Option<u64>,
+}
+
+/// Trusted device verification response payload.
+///
+/// Response to `TrustedVerify` containing the challenge signature
+/// and sender's confirmation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedVerifyAckPayload {
+    /// Ed25519 signature of the challenge (base64-encoded)
+    pub challenge_signature: String,
+    /// Whether the sender confirms the transfer (for AskEachTime mode)
+    pub confirmed: bool,
+    /// Reason if not confirmed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Encode a message payload to JSON bytes.
@@ -633,5 +729,122 @@ mod tests {
         let (header, read_payload) = read_frame(&mut cursor).await.expect("read frame");
         assert_eq!(header.message_type, MessageType::Pong);
         assert_eq!(read_payload, payload);
+    }
+
+    #[test]
+    fn test_trusted_hello_serialization() {
+        let device_id = uuid::Uuid::new_v4();
+        let payload = TrustedHelloPayload {
+            device_name: "Test Device".to_string(),
+            protocol_version: "1.0".to_string(),
+            device_id,
+            public_key: "base64_public_key".to_string(),
+            nonce: "base64_nonce".to_string(),
+            nonce_signature: "base64_signature".to_string(),
+        };
+
+        let encoded = encode_payload(&payload).expect("encode");
+        let decoded: TrustedHelloPayload = decode_payload(&encoded).expect("decode");
+
+        assert_eq!(decoded.device_name, payload.device_name);
+        assert_eq!(decoded.device_id, payload.device_id);
+        assert_eq!(decoded.public_key, payload.public_key);
+        assert_eq!(decoded.nonce, payload.nonce);
+        assert_eq!(decoded.nonce_signature, payload.nonce_signature);
+    }
+
+    #[test]
+    fn test_trusted_hello_ack_trusted() {
+        let device_id = uuid::Uuid::new_v4();
+        let payload = TrustedHelloAckPayload {
+            trusted: true,
+            device_name: Some("Receiver Device".to_string()),
+            device_id: Some(device_id),
+            public_key: Some("receiver_public_key".to_string()),
+            nonce_signature: Some("nonce_sig".to_string()),
+            error: None,
+            trust_level: Some("Full".to_string()),
+        };
+
+        let encoded = encode_payload(&payload).expect("encode");
+        let decoded: TrustedHelloAckPayload = decode_payload(&encoded).expect("decode");
+
+        assert!(decoded.trusted);
+        assert_eq!(decoded.device_name, Some("Receiver Device".to_string()));
+        assert_eq!(decoded.device_id, Some(device_id));
+        assert_eq!(decoded.trust_level, Some("Full".to_string()));
+    }
+
+    #[test]
+    fn test_trusted_hello_ack_not_trusted() {
+        let payload = TrustedHelloAckPayload {
+            trusted: false,
+            device_name: None,
+            device_id: None,
+            public_key: None,
+            nonce_signature: None,
+            error: Some("Device not in trust store".to_string()),
+            trust_level: None,
+        };
+
+        let encoded = encode_payload(&payload).expect("encode");
+        let json = String::from_utf8(encoded.clone()).expect("valid utf8");
+
+        // Verify None fields are skipped in JSON
+        assert!(!json.contains("device_name"));
+        assert!(!json.contains("device_id"));
+        assert!(json.contains("error"));
+
+        let decoded: TrustedHelloAckPayload = decode_payload(&encoded).expect("decode");
+        assert!(!decoded.trusted);
+        assert_eq!(decoded.error, Some("Device not in trust store".to_string()));
+    }
+
+    #[test]
+    fn test_trusted_verify_serialization() {
+        let payload = TrustedVerifyPayload {
+            challenge: "challenge_nonce".to_string(),
+            files: None,
+            total_size: None,
+        };
+
+        let encoded = encode_payload(&payload).expect("encode");
+        let decoded: TrustedVerifyPayload = decode_payload(&encoded).expect("decode");
+
+        assert_eq!(decoded.challenge, payload.challenge);
+        assert!(decoded.files.is_none());
+    }
+
+    #[test]
+    fn test_trusted_verify_ack_serialization() {
+        let payload = TrustedVerifyAckPayload {
+            challenge_signature: "signed_challenge".to_string(),
+            confirmed: true,
+            reason: None,
+        };
+
+        let encoded = encode_payload(&payload).expect("encode");
+        let decoded: TrustedVerifyAckPayload = decode_payload(&encoded).expect("decode");
+
+        assert_eq!(decoded.challenge_signature, payload.challenge_signature);
+        assert!(decoded.confirmed);
+        assert!(decoded.reason.is_none());
+    }
+
+    #[test]
+    fn test_trusted_message_types() {
+        assert_eq!(MessageType::from_byte(0x60), Some(MessageType::TrustedHello));
+        assert_eq!(
+            MessageType::from_byte(0x61),
+            Some(MessageType::TrustedHelloAck)
+        );
+        assert_eq!(
+            MessageType::from_byte(0x62),
+            Some(MessageType::TrustedVerify)
+        );
+        assert_eq!(
+            MessageType::from_byte(0x63),
+            Some(MessageType::TrustedVerifyAck)
+        );
     }
 }

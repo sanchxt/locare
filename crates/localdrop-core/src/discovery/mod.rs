@@ -37,7 +37,10 @@
 #[cfg(feature = "mdns")]
 pub mod mdns;
 
+mod beacon;
 mod hybrid;
+
+pub use beacon::{BeaconBroadcaster, BeaconListener, DeviceBeacon, DiscoveredDevice};
 pub use hybrid::{HybridBroadcaster, HybridListener};
 
 use std::collections::HashMap;

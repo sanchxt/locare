@@ -14,60 +14,13 @@
 //! - Ed25519 signatures for trusted device verification
 //! - HMAC-SHA256 for timing-attack-resistant code verification
 
+mod identity;
+
+pub use identity::DeviceIdentity;
+
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
-
-/// Device identity key pair (Ed25519).
-#[derive(Debug)]
-pub struct DeviceIdentity {
-    // TODO: Add ed25519_dalek::SigningKey
-    _private: (),
-}
-
-impl DeviceIdentity {
-    /// Generate a new random device identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if key generation fails.
-    pub fn generate() -> Result<Self> {
-        // TODO: Implement key generation
-        Ok(Self { _private: () })
-    }
-
-    /// Load device identity from storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the identity cannot be loaded.
-    pub fn load() -> Result<Self> {
-        // TODO: Implement loading from keychain/file
-        Ok(Self { _private: () })
-    }
-
-    /// Get the public key for this identity.
-    #[must_use]
-    pub fn public_key(&self) -> PublicKey {
-        // TODO: Return actual public key
-        PublicKey { _data: () }
-    }
-}
-
-/// Public key for device identity.
-#[derive(Debug, Clone)]
-pub struct PublicKey {
-    _data: (),
-}
-
-impl PublicKey {
-    /// Encode the public key as bytes.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        // TODO: Return actual bytes
-        &[]
-    }
-}
 
 /// TLS configuration for LocalDrop connections.
 ///

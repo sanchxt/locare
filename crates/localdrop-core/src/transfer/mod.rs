@@ -15,8 +15,10 @@
 //! - Checksum: xxHash64 per chunk, SHA-256 for complete file
 
 pub mod resume;
+pub mod trusted;
 
 pub use resume::ResumeManager;
+pub use trusted::{SenderInfo, TrustedReceiveSession, TrustedSendSession};
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -208,8 +210,8 @@ pub struct ShareSession {
     config: TransferConfig,
     /// Device name
     device_name: String,
-    /// Device ID (reserved for future use)
-    _device_id: Uuid,
+    /// Device identity (for trust feature)
+    identity: crypto::DeviceIdentity,
     /// Session key for HMAC verification
     session_key: [u8; 32],
     /// Progress sender
@@ -222,6 +224,12 @@ pub struct ShareSession {
     tls_config: TlsConfig,
     /// Hybrid discovery broadcaster (UDP + mDNS)
     broadcaster: HybridBroadcaster,
+    /// Receiver's device ID (captured after transfer)
+    receiver_device_id: Option<Uuid>,
+    /// Receiver's public key (captured after transfer)
+    receiver_public_key: Option<String>,
+    /// Receiver's device name (captured after transfer)
+    receiver_name: Option<String>,
 }
 
 impl std::fmt::Debug for ShareSession {
@@ -275,7 +283,10 @@ impl ShareSession {
 
         let broadcaster = HybridBroadcaster::new(config.discovery_port).await?;
 
-        let device_id = Uuid::new_v4();
+        // Load device identity for trust feature
+        let identity = crypto::DeviceIdentity::load_or_generate()?;
+        let device_id = identity.device_id();
+
         let packet = DiscoveryPacket::new(
             &code,
             &device_name,
@@ -293,13 +304,16 @@ impl ShareSession {
             file_paths,
             config,
             device_name,
-            _device_id: device_id,
+            identity,
             session_key,
             progress_tx,
             progress_rx,
             listener,
             tls_config,
             broadcaster,
+            receiver_device_id: None,
+            receiver_public_key: None,
+            receiver_name: None,
         })
     }
 
@@ -319,6 +333,24 @@ impl ShareSession {
     #[must_use]
     pub fn progress(&self) -> watch::Receiver<TransferProgress> {
         self.progress_rx.clone()
+    }
+
+    /// Get the receiver's device ID (after transfer completes).
+    #[must_use]
+    pub fn receiver_device_id(&self) -> Option<Uuid> {
+        self.receiver_device_id
+    }
+
+    /// Get the receiver's public key (after transfer completes).
+    #[must_use]
+    pub fn receiver_public_key(&self) -> Option<&str> {
+        self.receiver_public_key.as_deref()
+    }
+
+    /// Get the receiver's device name (after transfer completes).
+    #[must_use]
+    pub fn receiver_name(&self) -> Option<&str> {
+        self.receiver_name.as_deref()
     }
 
     /// Wait for a receiver to connect and complete the transfer.
@@ -347,7 +379,11 @@ impl ShareSession {
 
         self.update_state(TransferState::Connected);
 
-        self.do_handshake(&mut tls_stream).await?;
+        let (receiver_name, receiver_device_id, receiver_public_key) =
+            self.do_handshake(&mut tls_stream).await?;
+        self.receiver_name = Some(receiver_name);
+        self.receiver_device_id = receiver_device_id;
+        self.receiver_public_key = receiver_public_key;
 
         self.do_code_verification(&mut tls_stream).await?;
 
@@ -380,18 +416,23 @@ impl ShareSession {
         let _ = self.progress_tx.send(progress);
     }
 
-    async fn do_handshake<S>(&self, stream: &mut S) -> Result<()>
+    async fn do_handshake<S>(
+        &self,
+        stream: &mut S,
+    ) -> Result<(String, Option<Uuid>, Option<String>)>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let hello = HelloPayload {
             device_name: self.device_name.clone(),
             protocol_version: "1.0".to_string(),
+            device_id: Some(self.identity.device_id()),
+            public_key: Some(self.identity.public_key_base64()),
         };
         let payload = protocol::encode_payload(&hello)?;
         protocol::write_frame(stream, MessageType::Hello, &payload).await?;
 
-        let (header, _payload) = protocol::read_frame(stream).await?;
+        let (header, ack_payload) = protocol::read_frame(stream).await?;
         if header.message_type != MessageType::HelloAck {
             return Err(Error::UnexpectedMessage {
                 expected: "HelloAck".to_string(),
@@ -399,7 +440,8 @@ impl ShareSession {
             });
         }
 
-        Ok(())
+        let ack: HelloPayload = protocol::decode_payload(&ack_payload)?;
+        Ok((ack.device_name, ack.device_id, ack.public_key))
     }
 
     async fn do_code_verification<S>(&self, stream: &mut S) -> Result<()>
@@ -619,6 +661,10 @@ pub struct ReceiveSession {
     sender_addr: SocketAddr,
     /// Sender device name
     sender_name: String,
+    /// Sender device ID (for trust feature)
+    sender_device_id: Option<Uuid>,
+    /// Sender public key (for trust feature, base64-encoded)
+    sender_public_key: Option<String>,
     /// Files being received
     files: Vec<FileMetadata>,
     /// Output directory
@@ -708,7 +754,7 @@ impl ReceiveSession {
 
         let session_key = crypto::derive_session_key(code.as_str());
 
-        Self::do_handshake(&mut tls_stream).await?;
+        let (sender_device_id, sender_public_key) = Self::do_handshake(&mut tls_stream).await?;
 
         Self::do_code_verification(&mut tls_stream, code, &session_key).await?;
 
@@ -721,6 +767,8 @@ impl ReceiveSession {
         Ok(Self {
             sender_addr: transfer_addr,
             sender_name: discovered.packet.device_name,
+            sender_device_id,
+            sender_public_key,
             files,
             output_dir,
             _config: config,
@@ -737,6 +785,18 @@ impl ReceiveSession {
     #[must_use]
     pub fn sender(&self) -> (&SocketAddr, &str) {
         (&self.sender_addr, &self.sender_name)
+    }
+
+    /// Get sender device ID (if available, for trust feature).
+    #[must_use]
+    pub fn sender_device_id(&self) -> Option<Uuid> {
+        self.sender_device_id
+    }
+
+    /// Get sender public key (if available, for trust feature).
+    #[must_use]
+    pub fn sender_public_key(&self) -> Option<&str> {
+        self.sender_public_key.as_deref()
     }
 
     /// Get the files being received.
@@ -1006,7 +1066,7 @@ impl ReceiveSession {
 
         let session_key = crypto::derive_session_key(code.as_str());
 
-        Self::do_handshake(&mut tls_stream).await?;
+        let (sender_device_id, sender_public_key) = Self::do_handshake(&mut tls_stream).await?;
         Self::do_code_verification(&mut tls_stream, &code, &session_key).await?;
 
         let files = Self::receive_file_list(&mut tls_stream).await?;
@@ -1025,6 +1085,8 @@ impl ReceiveSession {
         Ok(Self {
             sender_addr: transfer_addr,
             sender_name: discovered.packet.device_name,
+            sender_device_id,
+            sender_public_key,
             files,
             output_dir: resume_state.output_dir,
             _config: config,
@@ -1223,7 +1285,8 @@ impl ReceiveSession {
         let _ = self.progress_tx.send(progress);
     }
 
-    async fn do_handshake<S>(stream: &mut S) -> Result<()>
+    /// Returns (sender_device_id, sender_public_key) from the Hello message.
+    async fn do_handshake<S>(stream: &mut S) -> Result<(Option<Uuid>, Option<String>)>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -1235,8 +1298,10 @@ impl ReceiveSession {
             });
         }
 
-        let _hello: HelloPayload = protocol::decode_payload(&payload)?;
+        let hello: HelloPayload = protocol::decode_payload(&payload)?;
 
+        // Load our own identity for the response
+        let identity = crypto::DeviceIdentity::load_or_generate()?;
         let device_name = hostname::get().map_or_else(
             |_| "Unknown".to_string(),
             |h| h.to_string_lossy().to_string(),
@@ -1244,11 +1309,13 @@ impl ReceiveSession {
         let ack = HelloPayload {
             device_name,
             protocol_version: "1.0".to_string(),
+            device_id: Some(identity.device_id()),
+            public_key: Some(identity.public_key_base64()),
         };
         let ack_payload = protocol::encode_payload(&ack)?;
         protocol::write_frame(stream, MessageType::HelloAck, &ack_payload).await?;
 
-        Ok(())
+        Ok((hello.device_id, hello.public_key))
     }
 
     async fn do_code_verification<S>(

@@ -1362,6 +1362,7 @@ dependencies = [
  "async-stream",
  "axum",
  "axum-extra",
+ "base64",
  "chrono",
  "directories",
  "ed25519-dalek",

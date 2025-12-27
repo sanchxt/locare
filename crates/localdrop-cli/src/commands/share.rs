@@ -4,14 +4,18 @@ use std::io::{self, Write};
 use std::time::Instant;
 
 use anyhow::Result;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::watch;
+use uuid::Uuid;
 
+use localdrop_core::config::TrustLevel;
 use localdrop_core::file::format_size;
 use localdrop_core::history::{
     HistoryFileEntry, HistoryStore, TransferDirection, TransferHistoryEntry,
     TransferState as HistoryState,
 };
 use localdrop_core::transfer::{ShareSession, TransferConfig, TransferProgress, TransferState};
+use localdrop_core::trust::{TrustStore, TrustedDevice};
 
 use super::ShareArgs;
 use crate::ui::{format_remaining, parse_duration, CodeBox};
@@ -60,7 +64,23 @@ pub async fn run(args: ShareArgs) -> Result<()> {
 
     let elapsed = start_time.elapsed();
 
-    handle_transfer_result(result, &code, &files, total_size, elapsed.as_secs(), &args)
+    // Capture receiver identity for trust prompt
+    let receiver_name = session.receiver_name().map(String::from);
+    let receiver_device_id = session.receiver_device_id();
+    let receiver_public_key = session.receiver_public_key().map(String::from);
+
+    handle_transfer_result(
+        result,
+        &code,
+        &files,
+        total_size,
+        elapsed.as_secs(),
+        &args,
+        receiver_name.as_deref(),
+        receiver_device_id,
+        receiver_public_key.as_deref(),
+    )
+    .await
 }
 
 /// Display share information (files and code).
@@ -106,13 +126,17 @@ fn display_share_info(
 }
 
 /// Handle the result of the transfer and update history.
-fn handle_transfer_result(
+#[allow(clippy::too_many_arguments)]
+async fn handle_transfer_result(
     result: localdrop_core::error::Result<()>,
     code: &str,
     files: &[localdrop_core::file::FileMetadata],
     total_size: u64,
     duration_secs: u64,
     args: &ShareArgs,
+    receiver_name: Option<&str>,
+    receiver_device_id: Option<Uuid>,
+    receiver_public_key: Option<&str>,
 ) -> Result<()> {
     match result {
         Ok(()) => {
@@ -129,6 +153,11 @@ fn handle_transfer_result(
                 println!();
                 println!("  Transfer complete!");
                 println!();
+
+                // Prompt to trust receiver if they provided identity info
+                if let Some(name) = receiver_name {
+                    prompt_trust_device(name, receiver_device_id, receiver_public_key).await;
+                }
             }
             if args.json {
                 let output = serde_json::json!({
@@ -297,4 +326,83 @@ async fn display_progress(
     }
 
     println!();
+}
+
+/// Prompt the user to trust the receiver device after a successful transfer.
+async fn prompt_trust_device(
+    receiver_name: &str,
+    receiver_device_id: Option<Uuid>,
+    receiver_public_key: Option<&str>,
+) {
+    // Need both device_id and public_key to establish trust
+    let (Some(device_id), Some(public_key)) = (receiver_device_id, receiver_public_key) else {
+        return; // Receiver doesn't support trusted device feature
+    };
+
+    // Check if already trusted
+    if let Ok(trust_store) = TrustStore::load() {
+        if trust_store.find_by_id(&device_id).is_some() {
+            return; // Already trusted
+        }
+    }
+
+    // Ask if user wants to trust this device
+    print!("  Trust \"{}\" for future transfers? [y/N] ", receiver_name);
+    if io::stdout().flush().is_err() {
+        return;
+    }
+
+    let mut input = String::new();
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin);
+    if reader.read_line(&mut input).await.is_err() {
+        return;
+    }
+    let input = input.trim().to_lowercase();
+
+    if input != "y" && input != "yes" {
+        return;
+    }
+
+    // Ask for trust level
+    println!();
+    println!("  Trust level:");
+    println!("    (1) Full - auto-accept transfers");
+    println!("    (2) Ask each time - confirm before sending");
+    print!("  Choose [1]: ");
+    if io::stdout().flush().is_err() {
+        return;
+    }
+
+    let mut level_input = String::new();
+    if reader.read_line(&mut level_input).await.is_err() {
+        return;
+    }
+    let level_input = level_input.trim();
+
+    let trust_level = if level_input == "2" {
+        TrustLevel::AskEachTime
+    } else {
+        TrustLevel::Full
+    };
+
+    // Add to trust store
+    let device =
+        TrustedDevice::new(device_id, receiver_name.to_string(), public_key.to_string())
+            .with_trust_level(trust_level);
+
+    match TrustStore::load() {
+        Ok(mut store) => {
+            if let Err(e) = store.add(device) {
+                eprintln!("  Failed to save trust: {}", e);
+            } else {
+                println!();
+                println!("  Device trusted.");
+                println!();
+            }
+        }
+        Err(e) => {
+            eprintln!("  Failed to load trust store: {}", e);
+        }
+    }
 }
