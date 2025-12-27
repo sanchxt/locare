@@ -23,7 +23,6 @@ use super::ReceiveArgs;
 /// Run the receive command.
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: ReceiveArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     let code = localdrop_core::code::ShareCode::parse(&args.code)?;
@@ -45,13 +44,11 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     }
 
-    // Resolve output directory: CLI arg -> config default -> current dir
     let output_dir = args
         .output
         .or_else(|| global_config.general.default_output.clone())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // Create transfer config using global config values
     let config = TransferConfig {
         chunk_size: global_config.transfer.chunk_size,
         parallel_streams: global_config.transfer.parallel_chunks,
@@ -175,7 +172,6 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
                 println!("  Files saved to: {}", output_dir.display());
                 println!();
 
-                // Prompt to trust sender if enabled in config and they provided identity info
                 if !args.batch && global_config.trust.auto_prompt {
                     prompt_trust_device(
                         &sender_name,
@@ -336,19 +332,16 @@ async fn prompt_trust_device(
     sender_device_id: Option<Uuid>,
     sender_public_key: Option<&str>,
 ) {
-    // Need both device_id and public_key to establish trust
     let (Some(device_id), Some(public_key)) = (sender_device_id, sender_public_key) else {
-        return; // Sender doesn't support trusted device feature
+        return;
     };
 
-    // Check if already trusted
     if let Ok(trust_store) = TrustStore::load() {
         if trust_store.find_by_id(&device_id).is_some() {
-            return; // Already trusted
+            return;
         }
     }
 
-    // Ask if user wants to trust this device
     print!("  Trust \"{}\" for future transfers? [y/N] ", sender_name);
     if io::stdout().flush().is_err() {
         return;
@@ -366,7 +359,6 @@ async fn prompt_trust_device(
         return;
     }
 
-    // Ask for trust level
     println!();
     println!("  Trust level:");
     println!("    (1) Full - auto-accept transfers");
@@ -388,7 +380,6 @@ async fn prompt_trust_device(
         TrustLevel::Full
     };
 
-    // Add to trust store
     let device = TrustedDevice::new(device_id, sender_name.to_string(), public_key.to_string())
         .with_trust_level(trust_level);
 

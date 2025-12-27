@@ -790,7 +790,6 @@ mod tests {
         let encoded = encode_payload(&payload).expect("encode");
         let json = String::from_utf8(encoded.clone()).expect("valid utf8");
 
-        // Verify None fields are skipped in JSON
         assert!(!json.contains("device_name"));
         assert!(!json.contains("device_id"));
         assert!(json.contains("error"));

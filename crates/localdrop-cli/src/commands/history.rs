@@ -9,7 +9,6 @@ use super::HistoryArgs;
 
 /// Run the history command.
 pub async fn run(args: HistoryArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     let mut store = HistoryStore::load().context("Failed to load transfer history")?;

@@ -117,7 +117,6 @@ impl DeviceIdentity {
         let signing_key = SigningKey::from_bytes(&secret_array);
         let derived_id = Self::derive_device_id(&signing_key.verifying_key());
 
-        // Verify the stored device_id matches the derived one
         if derived_id != file.device_id {
             return Err(Error::ConfigError(
                 "Device ID mismatch in identity file".to_string(),
@@ -168,7 +167,6 @@ impl DeviceIdentity {
             .as_ref()
             .ok_or_else(|| Error::ConfigError("No path set for identity".to_string()))?;
 
-        // Create parent directories if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 Error::ConfigError(format!(
@@ -303,13 +301,11 @@ impl DeviceIdentity {
         hasher.update(verifying_key.as_bytes());
         let hash = hasher.finalize();
 
-        // Take first 16 bytes and create UUID v4-like structure
         let mut bytes = [0u8; 16];
         bytes.copy_from_slice(&hash[..16]);
 
-        // Set version (4) and variant (RFC 4122) bits
-        bytes[6] = (bytes[6] & 0x0f) | 0x40; // Version 4
-        bytes[8] = (bytes[8] & 0x3f) | 0x80; // Variant RFC 4122
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
         Uuid::from_bytes(bytes)
     }
@@ -323,13 +319,10 @@ mod tests {
     fn test_generate_identity() {
         let identity = DeviceIdentity::generate().expect("should generate identity");
 
-        // Device ID should be valid UUID
         assert!(!identity.device_id().is_nil());
 
-        // Public key should be 32 bytes
         assert_eq!(identity.public_key_bytes().len(), 32);
 
-        // Base64 public key should decode back
         let decoded = BASE64_STANDARD
             .decode(identity.public_key_base64())
             .expect("should decode");
@@ -344,11 +337,9 @@ mod tests {
         let signature = identity.sign(data);
         assert_eq!(signature.len(), 64);
 
-        // Verify with raw bytes
         let public_key = identity.public_key_bytes();
         assert!(DeviceIdentity::verify(&public_key, data, &signature));
 
-        // Verify with base64
         let public_key_b64 = identity.public_key_base64();
         assert!(DeviceIdentity::verify_base64(
             &public_key_b64,
@@ -356,14 +347,12 @@ mod tests {
             &signature
         ));
 
-        // Wrong data should fail
         assert!(!DeviceIdentity::verify(
             &public_key,
             b"wrong data",
             &signature
         ));
 
-        // Wrong signature should fail
         let mut bad_signature = signature;
         bad_signature[0] ^= 0xff;
         assert!(!DeviceIdentity::verify(&public_key, data, &bad_signature));
@@ -373,7 +362,6 @@ mod tests {
     fn test_device_id_is_deterministic() {
         let identity = DeviceIdentity::generate().expect("should generate identity");
 
-        // Device ID derived from same public key should be the same
         let derived = DeviceIdentity::derive_device_id(&identity.verifying_key());
         assert_eq!(derived, identity.device_id());
     }
@@ -383,19 +371,16 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("should create temp dir");
         let path = temp_dir.path().join("test_identity.json");
 
-        // Generate and save
         let mut identity = DeviceIdentity::generate().expect("should generate identity");
         identity.path = Some(path.clone());
         identity.save().expect("should save identity");
 
-        // Load and compare
         let loaded = DeviceIdentity::load_from(path).expect("should load identity");
 
         assert_eq!(loaded.device_id(), identity.device_id());
         assert_eq!(loaded.public_key_bytes(), identity.public_key_bytes());
         assert_eq!(loaded.public_key_base64(), identity.public_key_base64());
 
-        // Loaded identity should still sign/verify correctly
         let data = b"test data";
         let signature = loaded.sign(data);
         assert!(DeviceIdentity::verify(
@@ -422,14 +407,12 @@ mod tests {
         let data = b"test data";
         let signature = id1.sign(data);
 
-        // Signature from id1 should not verify with id2's public key
         assert!(!DeviceIdentity::verify(
             &id2.public_key_bytes(),
             data,
             &signature
         ));
 
-        // But should verify with id1's public key
         assert!(DeviceIdentity::verify(
             &id1.public_key_bytes(),
             data,

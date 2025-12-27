@@ -22,14 +22,11 @@ use crate::ui::{format_remaining, parse_duration, CodeBox};
 
 /// Run the share command.
 pub async fn run(args: ShareArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
-    // Resolve compression: CLI flag or config default
     let compress =
         args.compress || matches!(global_config.transfer.compression, CompressionMode::Always);
 
-    // Create transfer config using global config values
     let config = TransferConfig {
         compress,
         chunk_size: global_config.transfer.chunk_size,
@@ -55,7 +52,6 @@ pub async fn run(args: ShareArgs) -> Result<()> {
     display_share_info(&files, total_size, &code, &args)?;
 
     let progress_rx = session.progress();
-    // Parse expire duration from CLI arg, fall back to config default
     let expire_duration =
         parse_duration(&args.expire).or(Some(global_config.general.default_expire));
     let start_time = Instant::now();
@@ -78,7 +74,6 @@ pub async fn run(args: ShareArgs) -> Result<()> {
 
     let elapsed = start_time.elapsed();
 
-    // Capture receiver identity for trust prompt
     let receiver_name = session.receiver_name().map(String::from);
     let receiver_device_id = session.receiver_device_id();
     let receiver_public_key = session.receiver_public_key().map(String::from);
@@ -170,7 +165,6 @@ async fn handle_transfer_result(
                 println!("  Transfer complete!");
                 println!();
 
-                // Prompt to trust receiver if enabled in config and they provided identity info
                 if trust_auto_prompt {
                     if let Some(name) = receiver_name {
                         prompt_trust_device(name, receiver_device_id, receiver_public_key).await;
@@ -352,19 +346,16 @@ async fn prompt_trust_device(
     receiver_device_id: Option<Uuid>,
     receiver_public_key: Option<&str>,
 ) {
-    // Need both device_id and public_key to establish trust
     let (Some(device_id), Some(public_key)) = (receiver_device_id, receiver_public_key) else {
-        return; // Receiver doesn't support trusted device feature
+        return;
     };
 
-    // Check if already trusted
     if let Ok(trust_store) = TrustStore::load() {
         if trust_store.find_by_id(&device_id).is_some() {
-            return; // Already trusted
+            return;
         }
     }
 
-    // Ask if user wants to trust this device
     print!("  Trust \"{}\" for future transfers? [y/N] ", receiver_name);
     if io::stdout().flush().is_err() {
         return;
@@ -382,7 +373,6 @@ async fn prompt_trust_device(
         return;
     }
 
-    // Ask for trust level
     println!();
     println!("  Trust level:");
     println!("    (1) Full - auto-accept transfers");
@@ -404,7 +394,6 @@ async fn prompt_trust_device(
         TrustLevel::Full
     };
 
-    // Add to trust store
     let device = TrustedDevice::new(device_id, receiver_name.to_string(), public_key.to_string())
         .with_trust_level(trust_level);
 

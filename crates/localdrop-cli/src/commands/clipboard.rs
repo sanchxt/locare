@@ -39,7 +39,6 @@ pub async fn run(args: ClipboardArgs) -> Result<()> {
 /// Run clipboard share (one-shot).
 #[allow(clippy::unused_async)]
 async fn run_share(_args: super::ClipboardShareArgs, quiet: bool, json: bool) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     if !quiet && !json {
@@ -129,7 +128,6 @@ async fn run_share(_args: super::ClipboardShareArgs, quiet: bool, json: bool) ->
 /// Run clipboard receive (one-shot).
 #[allow(clippy::too_many_lines)]
 async fn run_receive(args: super::ClipboardReceiveArgs, quiet: bool, json: bool) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     if !quiet && !json {
@@ -261,7 +259,6 @@ async fn run_receive(args: super::ClipboardReceiveArgs, quiet: bool, json: bool)
 
 /// Run clipboard sync (bidirectional live sync).
 async fn run_sync(args: super::ClipboardSyncArgs, quiet: bool, json: bool) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     if !quiet && !json {

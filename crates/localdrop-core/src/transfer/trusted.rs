@@ -175,7 +175,6 @@ impl TrustedSendSession {
         let broadcaster = BeaconBroadcaster::new(self.config.discovery_port).await?;
         let listener = BeaconListener::new(self.config.discovery_port).await?;
 
-        // Create beacon that we're looking for the target device
         let beacon = DeviceBeacon::new(
             self.identity.device_id(),
             &self.device_name,
@@ -184,12 +183,10 @@ impl TrustedSendSession {
         )
         .looking_for(self.target_device.device_id);
 
-        // Start broadcasting
         broadcaster
             .start(beacon, self.config.broadcast_interval)
             .await?;
 
-        // Wait for target device
         let discovered = listener
             .find_device(self.target_device.device_id, self.config.discovery_timeout)
             .await;
@@ -250,10 +247,8 @@ impl TrustedSendSession {
 
         self.update_state(TransferState::Connected);
 
-        // Perform trusted handshake
         self.do_trusted_handshake(&mut tls_stream).await?;
 
-        // Exchange file list
         let accepted = self.do_file_list_exchange(&mut tls_stream).await?;
         if !accepted {
             self.update_state(TransferState::Cancelled);
@@ -262,7 +257,6 @@ impl TrustedSendSession {
 
         self.update_state(TransferState::Transferring);
 
-        // Do transfer
         self.do_transfer(&mut tls_stream).await?;
 
         self.update_state(TransferState::Completed);
@@ -280,11 +274,9 @@ impl TrustedSendSession {
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
-        // Generate a nonce for the handshake
         let nonce: [u8; 32] = crypto::random_bytes();
         let nonce_base64 = BASE64_STANDARD.encode(nonce);
 
-        // Sign the nonce to prove our identity
         let nonce_signature = self.identity.sign(&nonce);
         let nonce_signature_base64 = BASE64_STANDARD.encode(nonce_signature);
 
@@ -315,7 +307,6 @@ impl TrustedSendSession {
             return Err(Error::DeviceNotTrusted(error));
         }
 
-        // Verify the receiver's signature on our nonce
         if let (Some(pub_key), Some(sig)) = (&ack.public_key, &ack.nonce_signature) {
             let sig_bytes = BASE64_STANDARD
                 .decode(sig)
@@ -573,7 +564,6 @@ impl TrustedReceiveSession {
 
         let broadcaster = BeaconBroadcaster::new(config.discovery_port).await?;
 
-        // Create beacon announcing we're ready to receive
         let beacon = DeviceBeacon::new(
             identity.device_id(),
             &device_name,
@@ -642,16 +632,13 @@ impl TrustedReceiveSession {
 
         self.update_state(TransferState::Connected);
 
-        // Perform trusted handshake and verify sender
         let sender_info = self
             .do_trusted_handshake(&mut tls_stream, peer_addr)
             .await?;
         self.sender_info = Some(sender_info);
 
-        // Receive file list
         self.files = self.receive_file_list(&mut tls_stream).await?;
 
-        // Update progress with file info
         let total_bytes: u64 = self.files.iter().map(|f| f.size).sum();
         let mut progress = TransferProgress::new(self.files.len(), total_bytes);
         progress.state = TransferState::Connected;
@@ -750,7 +737,6 @@ impl TrustedReceiveSession {
 
         let hello: TrustedHelloPayload = protocol::decode_payload(&payload)?;
 
-        // Decode and verify the sender's nonce signature
         let nonce = BASE64_STANDARD
             .decode(&hello.nonce)
             .map_err(|e| Error::ProtocolError(format!("invalid nonce: {e}")))?;
@@ -769,13 +755,11 @@ impl TrustedReceiveSession {
 
         tracing::debug!("Sender signature verified");
 
-        // Check if sender is in our trust store
         let trusted_device = self
             .trust_store
             .find_by_id(&hello.device_id)
             .ok_or_else(|| Error::DeviceNotTrusted(hello.device_name.clone()))?;
 
-        // Verify public key matches
         if trusted_device.public_key != hello.public_key {
             return Err(Error::DeviceNotTrusted(format!(
                 "public key mismatch for {}",
@@ -789,7 +773,6 @@ impl TrustedReceiveSession {
             trusted_device.trust_level
         );
 
-        // Sign their nonce to prove our identity
         let our_signature = self.identity.sign(&nonce);
         let our_signature_base64 = BASE64_STANDARD.encode(our_signature);
 

@@ -283,7 +283,6 @@ impl ShareSession {
 
         let broadcaster = HybridBroadcaster::new(config.discovery_port).await?;
 
-        // Load device identity for trust feature
         let identity = crypto::DeviceIdentity::load_or_generate()?;
         let device_id = identity.device_id();
 
@@ -1300,7 +1299,6 @@ impl ReceiveSession {
 
         let hello: HelloPayload = protocol::decode_payload(&payload)?;
 
-        // Load our own identity for the response
         let identity = crypto::DeviceIdentity::load_or_generate()?;
         let device_name = hostname::get().map_or_else(
             |_| "Unknown".to_string(),

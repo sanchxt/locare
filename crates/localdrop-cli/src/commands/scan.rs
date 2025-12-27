@@ -16,7 +16,6 @@ use crate::ui::parse_duration;
 
 /// Run the scan command.
 pub async fn run(args: ScanArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     let duration = parse_duration(&args.duration)

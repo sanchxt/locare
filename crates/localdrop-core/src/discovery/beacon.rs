@@ -137,7 +137,7 @@ impl DiscoveredDevice {
     pub fn transfer_addr(&self) -> SocketAddr {
         let ip = match self.source {
             SocketAddr::V4(addr) => *addr.ip(),
-            SocketAddr::V6(_) => Ipv4Addr::LOCALHOST, // Fallback, shouldn't happen
+            SocketAddr::V6(_) => Ipv4Addr::LOCALHOST,
         };
         SocketAddr::V4(SocketAddrV4::new(ip, self.beacon.transfer_port))
     }
@@ -230,7 +230,6 @@ impl BeaconBroadcaster {
             let mut current_beacon = beacon;
 
             loop {
-                // Refresh timestamp before each broadcast
                 current_beacon.refresh_timestamp();
 
                 let json = match serde_json::to_vec(&current_beacon) {

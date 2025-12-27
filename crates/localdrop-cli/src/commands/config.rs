@@ -498,7 +498,6 @@ fn parse_duration(s: &str) -> Result<std::time::Duration> {
     } else if let Some(hours) = s.strip_suffix('h') {
         Ok(std::time::Duration::from_secs(hours.parse::<u64>()? * 3600))
     } else {
-        // Assume seconds if no suffix
         Ok(std::time::Duration::from_secs(s.parse()?))
     }
 }
@@ -515,7 +514,6 @@ fn parse_size(s: &str) -> Result<usize> {
     } else if let Some(b) = s.strip_suffix('B') {
         Ok(b.trim().parse()?)
     } else {
-        // Assume bytes if no suffix
         Ok(s.parse()?)
     }
 }

@@ -26,10 +26,8 @@ use super::SendArgs;
 /// Run the send command.
 #[allow(clippy::too_many_lines)]
 pub async fn run(args: SendArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
-    // Load trust store and find device
     let trust_store = TrustStore::load().context("Failed to load trust store")?;
 
     let trusted_device = trust_store
@@ -37,14 +35,11 @@ pub async fn run(args: SendArgs) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Device '{}' not found in trust store", args.device))?
         .clone();
 
-    // Load device identity
     let identity = DeviceIdentity::load_or_generate().context("Failed to load device identity")?;
 
-    // Resolve compression: CLI flag or config default
     let compress =
         args.compress || matches!(global_config.transfer.compression, CompressionMode::Always);
 
-    // Create transfer config using global config values
     let config = TransferConfig {
         compress,
         chunk_size: global_config.transfer.chunk_size,
@@ -54,7 +49,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
         ..Default::default()
     };
 
-    // Create trusted send session
     let mut session =
         TrustedSendSession::new(trusted_device.clone(), identity, &args.paths, config)
             .await
@@ -72,7 +66,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
 
     display_send_info(&files, total_size, &trusted_device.device_name, &args);
 
-    // Discover the device on the network
     if !args.quiet {
         print!("  Searching for {}...", trusted_device.device_name);
         let _ = io::stdout().flush();
@@ -95,7 +88,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
                         e
                     ));
                 }
-                // Retry discovery
             }
             Err(_) => {
                 if start_discovery.elapsed() > discovery_timeout {
@@ -107,7 +99,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
                         trusted_device.device_name
                     ));
                 }
-                // Retry discovery
             }
         }
     };
@@ -117,7 +108,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
         println!();
     }
 
-    // For AskEachTime trust level, confirm before sending
     if trusted_device.trust_level == TrustLevel::AskEachTime && !args.quiet {
         print!(
             "  Send {} files ({}) to {}? [Y/n] ",
@@ -148,7 +138,6 @@ pub async fn run(args: SendArgs) -> Result<()> {
         Some(tokio::spawn(display_progress(progress_rx)))
     };
 
-    // Perform the transfer
     let result = session.send().await;
 
     if let Some(handle) = progress_handle {

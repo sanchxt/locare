@@ -27,7 +27,6 @@ struct NetworkInfo {
 
 /// Run the diagnose command.
 pub async fn run(args: DiagnoseArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
     let net_info = check_network(&global_config).await;

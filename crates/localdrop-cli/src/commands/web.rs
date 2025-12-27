@@ -6,17 +6,14 @@ use super::WebArgs;
 
 /// Run the web command.
 pub async fn run(args: WebArgs) -> Result<()> {
-    // Load user configuration for fallback values
     let global_config = super::load_config();
 
-    // Resolve port: CLI arg (if not default) -> config -> default
     let port = if args.port == 8080 {
         global_config.web.port
     } else {
         args.port
     };
 
-    // Resolve boolean flags: CLI flag OR config value
     let auth_enabled = args.auth || global_config.web.auth;
     let localhost_only = args.localhost_only || global_config.web.localhost_only;
 
