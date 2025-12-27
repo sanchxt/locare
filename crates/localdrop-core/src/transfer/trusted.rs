@@ -31,6 +31,7 @@ use tokio::sync::watch;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use uuid::Uuid;
 
+use crate::config::TrustLevel;
 use crate::crypto::{self, DeviceIdentity, TlsConfig};
 use crate::discovery::{BeaconBroadcaster, BeaconListener, DeviceBeacon, DiscoveredDevice};
 use crate::error::{Error, Result};
@@ -41,7 +42,6 @@ use crate::protocol::{
     self, ChunkAckPayload, ChunkDataPayload, ChunkStartPayload, FileListAckPayload,
     FileListPayload, MessageType, TrustedHelloAckPayload, TrustedHelloPayload,
 };
-use crate::config::TrustLevel;
 use crate::trust::{TrustStore, TrustedDevice};
 
 use super::{TransferConfig, TransferProgress, TransferState};
@@ -227,7 +227,11 @@ impl TrustedSendSession {
             .ok_or_else(|| Error::Internal("call discover() first".to_string()))?;
 
         let transfer_addr = target.transfer_addr();
-        tracing::info!("Connecting to {} at {}", target.beacon.device_name, transfer_addr);
+        tracing::info!(
+            "Connecting to {} at {}",
+            target.beacon.device_name,
+            transfer_addr
+        );
 
         let stream = TcpStream::connect(transfer_addr).await?;
         configure_tcp_keepalive(&stream)?;
@@ -442,7 +446,8 @@ impl TrustedSendSession {
                         }
                         let remaining = progress.total_bytes - progress.total_bytes_transferred;
                         if progress.speed_bps > 0 {
-                            progress.eta = Some(Duration::from_secs(remaining / progress.speed_bps));
+                            progress.eta =
+                                Some(Duration::from_secs(remaining / progress.speed_bps));
                         }
                     }
                     let _ = self.progress_tx.send(progress);
@@ -577,9 +582,7 @@ impl TrustedReceiveSession {
         )
         .ready_to_receive(true);
 
-        broadcaster
-            .start(beacon, config.broadcast_interval)
-            .await?;
+        broadcaster.start(beacon, config.broadcast_interval).await?;
 
         let progress = TransferProgress::new(0, 0);
         let (progress_tx, progress_rx) = watch::channel(progress);
@@ -640,7 +643,9 @@ impl TrustedReceiveSession {
         self.update_state(TransferState::Connected);
 
         // Perform trusted handshake and verify sender
-        let sender_info = self.do_trusted_handshake(&mut tls_stream, peer_addr).await?;
+        let sender_info = self
+            .do_trusted_handshake(&mut tls_stream, peer_addr)
+            .await?;
         self.sender_info = Some(sender_info);
 
         // Receive file list

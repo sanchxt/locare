@@ -35,8 +35,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         .clone();
 
     // Load device identity
-    let identity = DeviceIdentity::load_or_generate()
-        .context("Failed to load device identity")?;
+    let identity = DeviceIdentity::load_or_generate().context("Failed to load device identity")?;
 
     // Create transfer config
     let config = TransferConfig {
@@ -45,14 +44,10 @@ pub async fn run(args: SendArgs) -> Result<()> {
     };
 
     // Create trusted send session
-    let mut session = TrustedSendSession::new(
-        trusted_device.clone(),
-        identity,
-        &args.paths,
-        config,
-    )
-    .await
-    .context("Failed to create send session")?;
+    let mut session =
+        TrustedSendSession::new(trusted_device.clone(), identity, &args.paths, config)
+            .await
+            .context("Failed to create send session")?;
 
     if !args.quiet {
         println!();

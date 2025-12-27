@@ -387,9 +387,8 @@ async fn prompt_trust_device(
     };
 
     // Add to trust store
-    let device =
-        TrustedDevice::new(device_id, receiver_name.to_string(), public_key.to_string())
-            .with_trust_level(trust_level);
+    let device = TrustedDevice::new(device_id, receiver_name.to_string(), public_key.to_string())
+        .with_trust_level(trust_level);
 
     match TrustStore::load() {
         Ok(mut store) => {

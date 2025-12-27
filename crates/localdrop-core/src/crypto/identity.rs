@@ -96,20 +96,23 @@ impl DeviceIdentity {
     /// Returns an error if the file cannot be read or parsed.
     pub fn load_from(path: PathBuf) -> Result<Self> {
         let content = fs::read_to_string(&path).map_err(|e| {
-            Error::ConfigError(format!("Failed to read identity file {}: {}", path.display(), e))
+            Error::ConfigError(format!(
+                "Failed to read identity file {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
-        let file: IdentityFile = serde_json::from_str(&content).map_err(|e| {
-            Error::ConfigError(format!("Failed to parse identity file: {e}"))
-        })?;
+        let file: IdentityFile = serde_json::from_str(&content)
+            .map_err(|e| Error::ConfigError(format!("Failed to parse identity file: {e}")))?;
 
-        let secret_bytes = BASE64_STANDARD.decode(&file.secret_key).map_err(|e| {
-            Error::ConfigError(format!("Failed to decode secret key: {e}"))
-        })?;
+        let secret_bytes = BASE64_STANDARD
+            .decode(&file.secret_key)
+            .map_err(|e| Error::ConfigError(format!("Failed to decode secret key: {e}")))?;
 
-        let secret_array: [u8; 32] = secret_bytes.try_into().map_err(|_| {
-            Error::ConfigError("Invalid secret key length".to_string())
-        })?;
+        let secret_array: [u8; 32] = secret_bytes
+            .try_into()
+            .map_err(|_| Error::ConfigError("Invalid secret key length".to_string()))?;
 
         let signing_key = SigningKey::from_bytes(&secret_array);
         let derived_id = Self::derive_device_id(&signing_key.verifying_key());
@@ -160,9 +163,10 @@ impl DeviceIdentity {
     ///
     /// Returns an error if the identity cannot be saved.
     pub fn save(&self) -> Result<()> {
-        let path = self.path.as_ref().ok_or_else(|| {
-            Error::ConfigError("No path set for identity".to_string())
-        })?;
+        let path = self
+            .path
+            .as_ref()
+            .ok_or_else(|| Error::ConfigError("No path set for identity".to_string()))?;
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
@@ -181,13 +185,11 @@ impl DeviceIdentity {
             device_id: self.device_id,
         };
 
-        let content = serde_json::to_string_pretty(&file).map_err(|e| {
-            Error::Serialization(format!("Failed to serialize identity: {e}"))
-        })?;
+        let content = serde_json::to_string_pretty(&file)
+            .map_err(|e| Error::Serialization(format!("Failed to serialize identity: {e}")))?;
 
-        fs::write(path, content).map_err(|e| {
-            Error::ConfigError(format!("Failed to write identity file: {e}"))
-        })?;
+        fs::write(path, content)
+            .map_err(|e| Error::ConfigError(format!("Failed to write identity file: {e}")))?;
 
         Ok(())
     }
@@ -251,7 +253,8 @@ impl DeviceIdentity {
             return false;
         };
 
-        let Ok(public_key_array): std::result::Result<[u8; 32], _> = public_key_bytes.try_into() else {
+        let Ok(public_key_array): std::result::Result<[u8; 32], _> = public_key_bytes.try_into()
+        else {
             return false;
         };
 
@@ -347,10 +350,18 @@ mod tests {
 
         // Verify with base64
         let public_key_b64 = identity.public_key_base64();
-        assert!(DeviceIdentity::verify_base64(&public_key_b64, data, &signature));
+        assert!(DeviceIdentity::verify_base64(
+            &public_key_b64,
+            data,
+            &signature
+        ));
 
         // Wrong data should fail
-        assert!(!DeviceIdentity::verify(&public_key, b"wrong data", &signature));
+        assert!(!DeviceIdentity::verify(
+            &public_key,
+            b"wrong data",
+            &signature
+        ));
 
         // Wrong signature should fail
         let mut bad_signature = signature;
@@ -387,7 +398,11 @@ mod tests {
         // Loaded identity should still sign/verify correctly
         let data = b"test data";
         let signature = loaded.sign(data);
-        assert!(DeviceIdentity::verify(&loaded.public_key_bytes(), data, &signature));
+        assert!(DeviceIdentity::verify(
+            &loaded.public_key_bytes(),
+            data,
+            &signature
+        ));
     }
 
     #[test]
@@ -408,9 +423,17 @@ mod tests {
         let signature = id1.sign(data);
 
         // Signature from id1 should not verify with id2's public key
-        assert!(!DeviceIdentity::verify(&id2.public_key_bytes(), data, &signature));
+        assert!(!DeviceIdentity::verify(
+            &id2.public_key_bytes(),
+            data,
+            &signature
+        ));
 
         // But should verify with id1's public key
-        assert!(DeviceIdentity::verify(&id1.public_key_bytes(), data, &signature));
+        assert!(DeviceIdentity::verify(
+            &id1.public_key_bytes(),
+            data,
+            &signature
+        ));
     }
 }

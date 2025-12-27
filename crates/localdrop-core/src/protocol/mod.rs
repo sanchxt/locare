@@ -833,7 +833,10 @@ mod tests {
 
     #[test]
     fn test_trusted_message_types() {
-        assert_eq!(MessageType::from_byte(0x60), Some(MessageType::TrustedHello));
+        assert_eq!(
+            MessageType::from_byte(0x60),
+            Some(MessageType::TrustedHello)
+        );
         assert_eq!(
             MessageType::from_byte(0x61),
             Some(MessageType::TrustedHelloAck)

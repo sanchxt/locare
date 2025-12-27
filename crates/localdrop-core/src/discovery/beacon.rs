@@ -399,9 +399,7 @@ impl BeaconListener {
             match result {
                 Ok(Ok((len, source))) => {
                     if let Ok(beacon) = serde_json::from_slice::<DeviceBeacon>(&buf[..len]) {
-                        if beacon.is_valid()
-                            && beacon.device_name.to_lowercase() == name_lower
-                        {
+                        if beacon.is_valid() && beacon.device_name.to_lowercase() == name_lower {
                             return Ok(DiscoveredDevice {
                                 beacon,
                                 source,
@@ -543,8 +541,8 @@ mod tests {
     fn test_beacon_looking_for() {
         let device_id = Uuid::new_v4();
         let target_id = Uuid::new_v4();
-        let beacon = DeviceBeacon::new(device_id, "Test Device", "key", 52530)
-            .looking_for(target_id);
+        let beacon =
+            DeviceBeacon::new(device_id, "Test Device", "key", 52530).looking_for(target_id);
 
         assert_eq!(beacon.looking_for, Some(target_id));
         assert!(beacon.is_looking_for(target_id));
@@ -554,8 +552,8 @@ mod tests {
     #[test]
     fn test_beacon_ready_to_receive() {
         let device_id = Uuid::new_v4();
-        let beacon = DeviceBeacon::new(device_id, "Test Device", "key", 52530)
-            .ready_to_receive(true);
+        let beacon =
+            DeviceBeacon::new(device_id, "Test Device", "key", 52530).ready_to_receive(true);
 
         assert!(beacon.ready_to_receive);
     }
@@ -599,9 +597,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcaster_start_stop() {
-        let broadcaster = BeaconBroadcaster::new(0)
-            .await
-            .expect("create broadcaster");
+        let broadcaster = BeaconBroadcaster::new(0).await.expect("create broadcaster");
         let device_id = Uuid::new_v4();
         let beacon = DeviceBeacon::new(device_id, "Test Device", "key", 52530);
 

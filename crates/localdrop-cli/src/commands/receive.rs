@@ -163,8 +163,12 @@ pub async fn run(args: ReceiveArgs) -> Result<()> {
 
                 // Prompt to trust sender if they provided identity info
                 if !args.batch {
-                    prompt_trust_device(&sender_name, sender_device_id, sender_public_key.as_deref())
-                        .await;
+                    prompt_trust_device(
+                        &sender_name,
+                        sender_device_id,
+                        sender_public_key.as_deref(),
+                    )
+                    .await;
                 }
             }
             if args.json {
